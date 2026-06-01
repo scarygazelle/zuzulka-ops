@@ -42,10 +42,16 @@ def init_db():
                 done           INTEGER DEFAULT 0
             )
         """)
-        try:
-            conn.execute("ALTER TABLE zuzulka_tasks ADD COLUMN done INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
+        for col, definition in [
+            ("done",          "INTEGER DEFAULT 0"),
+            ("interval_days", "INTEGER DEFAULT 0"),
+            ("freq",          "TEXT DEFAULT 'none'"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE zuzulka_tasks ADD COLUMN {col} {definition}")
+                log.info("Migration: added column '%s'", col)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
 
 
