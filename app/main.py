@@ -15,13 +15,14 @@ def get_db():
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
+    # Додаємо колонку interval_days для довільного циклу
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS zuzulka_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             event_date TEXT NOT NULL,
-            task_type TEXT NOT NULL,
-            freq TEXT DEFAULT 'none'
+            freq TEXT DEFAULT 'none',
+            interval_days INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
@@ -41,8 +42,8 @@ async def add_ingress_prefix(request: Request, call_next):
 class TaskCreate(BaseModel):
     title: str
     event_date: str
-    task_type: str
-    freq: Optional[str] = 'none'
+    freq: str = 'none'
+    interval_days: int = 0
 
 @app.get("/api/tasks")
 async def get_tasks():
@@ -57,8 +58,8 @@ async def get_tasks():
 async def create_task(task: TaskCreate):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO zuzulka_tasks (title, event_date, task_type, freq) VALUES (?, ?, ?, ?)",
-                   (task.title, task.event_date, task.task_type, task.freq))
+    cursor.execute("INSERT INTO zuzulka_tasks (title, event_date, freq, interval_days) VALUES (?, ?, ?, ?)",
+                   (task.title, task.event_date, task.freq, task.interval_days))
     conn.commit()
     conn.close()
     return {"status": "success"}
@@ -79,39 +80,36 @@ async def read_root(request: Request):
     <!DOCTYPE html>
     <html>
     <head>
-        <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
         <style>
-            body {{ background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 20px; }}
+            body {{ background: #121212; color: white; font-family: sans-serif; padding: 20px; }}
             .container {{ max-width: 1000px; margin: auto; }}
             .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
-            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #252525; margin-bottom: 8px; border-radius: 8px; border-left: 5px solid #03a9f4; }}
-            input, select {{ width: 100%; padding: 12px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; box-sizing: border-box; }}
-            .btn {{ cursor: pointer; padding: 12px; border: none; border-radius: 6px; color: white; width: 100%; background: #03a9f4; font-weight: bold; }}
-            .btn-del {{ background: #f44336; padding: 6px 12px; border-radius: 4px; }}
-            h3 {{ margin-top: 0; color: #03a9f4; }}
+            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }}
+            .btns-group {{ display: flex; gap: 5px; }}
+            .btn-icon {{ cursor: pointer; padding: 5px 8px; border: none; border-radius: 4px; color: white; font-size: 14px; }}
+            .btn-edit {{ background: #ff9800; }}
+            .btn-del {{ background: #f44336; }}
+            input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>Бортовий Журнал "Зузулька" 🚀</h1>
             <div class="card"><div id="calendar"></div></div>
-
             <div class="card">
-                <h3>➕ Нова задача / Подія</h3>
+                <h3>➕ Нова задача</h3>
                 <form id="taskForm">
-                    <input type="text" id="title" placeholder="Назва події / задачі" required>
+                    <input type="text" id="title" placeholder="Назва" required>
                     <input type="date" id="eventDate" required>
-                    <select id="freq">
+                    <select id="freq" onchange="toggleInterval(this.value)">
                         <option value="none">Одноразова</option>
-                        <option value="daily">Щодня</option>
-                        <option value="weekly">Щотижня</option>
-                        <option value="monthly">Щомісяця</option>
+                        <option value="custom">Кожні Х днів</option>
                     </select>
-                    <button type="submit" class="btn">Додати в журнал</button>
+                    <input type="number" id="interval" placeholder="Кількість днів" style="display:none;">
+                    <button type="submit" class="btn" style="background:#03a9f4; border:none; padding:10px; width:100%; border-radius:6px; color:white;">Додати</button>
                 </form>
             </div>
-
             <div class="card">
                 <h3>📜 Хронологічний список</h3>
                 <div id="taskList"></div>
@@ -119,26 +117,21 @@ async def read_root(request: Request):
         </div>
         <script>
             const apiBase = "{root_path}";
-            let calendar;
-
-            document.addEventListener('DOMContentLoaded', function() {{
-                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{ initialView: 'dayGridMonth', locale: 'uk' }});
-                calendar.render();
-                loadTasks();
-            }});
+            function toggleInterval(val) {{ document.getElementById('interval').style.display = val === 'custom' ? 'block' : 'none'; }}
 
             async function loadTasks() {{
                 const res = await fetch(`${{apiBase}}/api/tasks`);
                 const tasks = await res.json();
-                calendar.removeAllEvents();
                 const list = document.getElementById('taskList');
                 list.innerHTML = '';
                 tasks.forEach(t => {{
-                    calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
                     const div = document.createElement('div');
                     div.className = 'task-item';
-                    div.innerHTML = `<span><b>${{t.title}}</b> (${{t.event_date}}) - ${{t.freq !== 'none' ? '🔁 ' + t.freq : '📌 Одноразова'}}</span>
-                                     <button class="btn btn-del" onclick="deleteTask(${{t.id}})">🗑️</button>`;
+                    div.innerHTML = `<span><b>${{t.title}}</b> (${{t.event_date}})</span>
+                        <div class="btns-group">
+                            <button class="btn-icon btn-edit" onclick="alert('Редагування ID: ${{t.id}} - скоро буде!')">✎</button>
+                            <button class="btn-icon btn-del" onclick="deleteTask(${{t.id}})">🗑️</button>
+                        </div>`;
                     list.appendChild(div);
                 }});
             }}
@@ -151,19 +144,15 @@ async def read_root(request: Request):
                     body: JSON.stringify({{
                         title: document.getElementById('title').value,
                         event_date: document.getElementById('eventDate').value,
-                        task_type: 'custom',
-                        freq: document.getElementById('freq').value
+                        freq: document.getElementById('freq').value,
+                        interval_days: parseInt(document.getElementById('interval').value || 0)
                     }})
                 }});
-                document.getElementById('taskForm').reset();
                 loadTasks();
             }};
 
-            async function deleteTask(id) {{
-                if(!confirm("Видалити цю задачу?")) return;
-                await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }});
-                loadTasks();
-            }}
+            async function deleteTask(id) {{ if(confirm("Видалити?")) {{ await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }}); loadTasks(); }} }}
+            loadTasks();
         </script>
     </body>
     </html>
