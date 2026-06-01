@@ -1,338 +1,153 @@
-﻿from fastapi import FastAPI, Request
+﻿from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+import sqlite3
 from typing import Optional
 
-app = FastAPI(title="Zuzulka Home Ops API")
+# База даних у системній папці аддонів HA
+DB_PATH = "/data/zuzulka.db"
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS zuzulka_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            event_date TEXT NOT NULL,
+            task_type TEXT NOT NULL,
+            freq TEXT DEFAULT 'none',
+            interval INTEGER DEFAULT 1
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+app = FastAPI(title="Zuzulka Home Ops API")
+init_db()
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.middleware("http")
 async def add_ingress_prefix(request: Request, call_next):
     root_path = request.headers.get("X-Ingress-Path", "")
-    if root_path:
-        request.scope["root_path"] = root_path
-    response = await call_next(request)
-    return response
+    if root_path: request.scope["root_path"] = root_path
+    return await call_next(request)
+
+class TaskCreate(BaseModel):
+    title: str
+    event_date: str
+    task_type: str
+    freq: Optional[str] = 'none'
+    interval: Optional[int] = 1
+
+@app.get("/api/tasks")
+async def get_tasks():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM zuzulka_tasks ORDER BY event_date ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+@app.post("/api/tasks")
+async def create_task(task: TaskCreate):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO zuzulka_tasks (title, event_date, task_type, freq, interval) VALUES (?, ?, ?, ?, ?)",
+        (task.title, task.event_date, task.task_type, task.freq, task.interval)
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return """
+    root_path = request.scope.get("root_path", "")
+    return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Zuzulka Home Ops</title>
         <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/rrule@6.1.11/index.global.min.js"></script>
         <style>
-            :root {
-                --bg-color: #121212;
-                --card-bg: #1e1e1e;
-                --text-color: #e0e0e0;
-                --primary: #03a9f4;
-                --accent: #ff9800;
-                --past-gray: #757575;
-                --today-green: #4caf50;
-                --future-orange: #ff9800;
-            }
-            body {
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background-color: var(--bg-color);
-                color: var(--text-color);
-                margin: 0;
-                padding: 20px;
-            }
-            h1 {
-                text-align: center;
-                color: var(--primary);
-                margin-bottom: 30px;
-            }
-            .container {
-                display: grid;
-                grid-template-columns: 1fr;
-                gap: 20px;
-                max-width: 1400px;
-                margin: 0 auto;
-            }
-            @media (min-width: 992px) {
-                .container {
-                    grid-template-columns: 2fr 1fr;
-                }
-                .full-width {
-                    grid-column: span 2;
-                }
-            }
-            .card {
-                background-color: var(--card-bg);
-                border-radius: 12px;
-                padding: 20px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-            }
-            .card h2 {
-                margin-top: 0;
-                border-bottom: 2px solid #333;
-                padding-bottom: 10px;
-                color: var(--primary);
-            }
-            /* Стилізація календаря під темну тему */
-            #calendar {
-                background: var(--card-bg);
-                padding: 10px;
-                border-radius: 8px;
-            }
-            .fc {
-                --fc-border-color: #333;
-                --fc-page-bg-color: var(--card-bg);
-                --fc-neutral-text-color: var(--text-color);
-            }
-            .fc .fc-button-primary {
-                background-color: var(--primary);
-                border-color: var(--primary);
-            }
-            .fc .fc-button-primary:hover {
-                background-color: #0288d1;
-                border-color: #0288d1;
-            }
-            /* Список подій */
-            .event-list {
-                list-style: none;
-                padding: 0;
-                max-height: 500px;
-                overflow-y: auto;
-            }
-            .event-item {
-                padding: 12px;
-                margin-bottom: 10px;
-                border-radius: 6px;
-                background: #252525;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                border-left: 5px solid transparent;
-            }
-            .event-item.past {
-                border-left-color: var(--past-gray);
-                color: var(--past-gray);
-            }
-            .event-item.today {
-                border-left-color: var(--today-green);
-                background: #1b2e1c;
-            }
-            .event-item.today .event-date {
-                color: var(--today-green);
-                font-weight: bold;
-            }
-            .event-item.future {
-                border-left-color: var(--future-orange);
-            }
-            .event-item.future .event-date {
-                color: var(--future-orange);
-            }
-            .event-title {
-                font-weight: 600;
-            }
-            .event-badge {
-                font-size: 0.8rem;
-                padding: 2px 6px;
-                border-radius: 4px;
-                background: #333;
-                color: #aaa;
-            }
-            /* Форма */
-            .form-group {
-                margin-bottom: 15px;
-            }
-            .form-group label {
-                display: block;
-                margin-bottom: 5px;
-                font-size: 0.9rem;
-            }
-            .form-group input, .form-group select, .form-group textarea {
-                width: 100%;
-                padding: 10px;
-                background-color: #252525;
-                border: 1px solid #444;
-                border-radius: 6px;
-                color: var(--text-color);
-                box-sizing: border-box;
-            }
-            .form-group input:focus, .form-group select:focus {
-                border-color: var(--primary);
-                outline: none;
-            }
-            .btn {
-                background-color: var(--primary);
-                color: white;
-                border: none;
-                padding: 12px 20px;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: bold;
-                width: 100%;
-                transition: background 0.2s;
-            }
-            .btn:hover {
-                background-color: #0288d1;
-            }
+            body {{ background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 20px; }}
+            .container {{ display: grid; grid-template-columns: 2fr 1fr; gap: 20px; max-width: 1400px; margin: auto; }}
+            .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; }}
+            input, select {{ width: 100%; padding: 10px; background: #252525; border: 1px solid #444; color: white; margin-bottom: 10px; border-radius: 6px; }}
+            .btn {{ background: #03a9f4; color: white; padding: 10px; border: none; width: 100%; border-radius: 6px; cursor: pointer; }}
+            .event-item {{ padding: 10px; margin-bottom: 8px; background: #252525; border-left: 5px solid #03a9f4; border-radius: 4px; }}
         </style>
     </head>
     <body>
-
-        <h1>Бортовий Журнал "Зузулька" 🚀</h1>
-
+        <h1>Zuzulka Log 🚀</h1>
         <div class="container">
-
+            <div class="card"><div id="calendar"></div></div>
             <div class="card">
-                <h2>📅 Календар подій</h2>
-                <div id="calendar"></div>
-            </div>
-
-            <div style="display: flex; flex-direction: column; gap: 20px;">
-
-                <div class="card">
-                    <h2>➕ Нова задача / Подія</h2>
-                    <form id="taskForm">
-                        <div class="form-group">
-                            <label for="title">Назва події / задачі</label>
-                            <input type="text" id="title" required placeholder="Наприклад: Заміна фільтрів осмосу">
-                        </div>
-                        <div class="form-group">
-                            <label for="eventDate">Дата виконання</label>
-                            <input type="date" id="eventDate" required>
-                        </div>
-                        <div class="form-group">
-                            <label for="type">Тип події</label>
-                            <select id="type">
-                                <option value="once">Одноразова подія</option>
-                                <option value="recurring">Рекурентна (Повторювана)</option>
-                            </select>
-                        </div>
-                        <button type="submit" class="btn">Додати в журнал</button>
-                    </form>
-                </div>
-
-                <div class="card">
-                    <h2>📋 Хронологічний список</h2>
-                    <ul id="eventList" class="event-list">
-                        </ul>
-                </div>
-
+                <h2>➕ Додати задачу</h2>
+                <form id="taskForm">
+                    <input type="text" id="title" placeholder="Назва" required>
+                    <input type="date" id="eventDate" required>
+                    <select id="freq">
+                        <option value="none">Одноразова</option>
+                        <option value="daily">Щодня</option>
+                        <option value="weekly">Щотижня</option>
+                        <option value="monthly">Щомісяця</option>
+                    </select>
+                    <button type="submit" class="btn">Додати</button>
+                </form>
+                <div id="eventList"></div>
             </div>
         </div>
-
         <script>
-            // Демо-дані за замовчуванням
-            const defaultEvents = [
-                { id: "1", title: "Заміна блідера гідроакумулятора", start: "2026-05-15", extendedProps: { type: "once" } },
-                { id: "2", title: "Обслуговування септика", start: "2026-06-01", extendedProps: { type: "recurring" } },
-                { id: "3", title: "Ревізія LiFePO4 акумуляторів", start: "2026-06-10", extendedProps: { type: "recurring" } }
-            ];
+            const apiBase = "{root_path}";
+            let calendar;
 
-            // Завантаження даних з localStorage або використання дефолтних
-            let events = JSON.parse(localStorage.getItem('zuzulka_events')) || defaultEvents;
-
-            function saveEvents() {
-                localStorage.setItem('zuzulka_events', JSON.stringify(events));
-            }
-
-            // Отримання поточної дати у форматі YYYY-MM-DD (локальний час)
-            function getTodayDateString() {
-                const today = new Date();
-                const offset = today.getTimezoneOffset();
-                const localToday = new Date(today.getTime() - (offset * 60 * 1000));
-                return localToday.toISOString().split('T')[0];
-            }
-
-            document.addEventListener('DOMContentLoaded', function() {
-                const calendarEl = document.getElementById('calendar');
-                const todayStr = getTodayDateString();
-
-                // Ініціалізація календаря
-                const calendar = new FullCalendar.Calendar(calendarEl, {
-                    initialView: 'dayGridMonth',
-                    locale: 'uk',
-                    firstDay: 1, // Початок тижня з понеділка
-                    headerToolbar: {
-                        left: 'prev,next today',
-                        center: 'title',
-                        right: 'dayGridMonth,listMonth'
-                    },
-                    events: events,
-                    eventColor: '#03a9f4'
-                });
+            document.addEventListener('DOMContentLoaded', async function() {{
+                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+                    initialView: 'dayGridMonth', locale: 'uk', plugins: [FullCalendar.rrulePlugin]
+                }});
                 calendar.render();
+                loadTasks();
+            }});
 
-                // Функція рендерингу списку подій з колірним маркуванням
-                function renderEventList() {
-                    const listEl = document.getElementById('eventList');
-                    listEl.innerHTML = '';
+            async function loadTasks() {{
+                const res = await fetch(`${{apiBase}}/api/tasks`);
+                const data = await res.json();
+                calendar.removeAllEvents();
+                data.forEach(t => {{
+                    if (t.freq !== 'none') {{
+                        calendar.addEvent({{ title: t.title, rrule: {{ freq: t.freq, dtstart: t.event_date }} }});
+                    } else {{
+                        calendar.addEvent({{ title: t.title, start: t.event_date }});
+                    }}
+                }});
+                document.getElementById('eventList').innerHTML = data.map(t =>
+                    `<div class="event-item">${{t.title}} - ${{t.event_date}}</div>`).join('');
+            }}
 
-                    // Сортуємо події від найстаріших до найновіших
-                    const sortedEvents = [...events].sort((a, b) => new Date(a.start) - new Date(b.start));
-
-                    sortedEvents.forEach(ev => {
-                        const li = document.createElement('li');
-                        li.className = 'event-item';
-
-                        // Логіка визначення статусу (минуле, сьогодні, майбутнє)
-                        if (ev.start < todayStr) {
-                            li.classList.add('past');
-                        } else if (ev.start === todayStr) {
-                            li.classList.add('today');
-                        } else {
-                            li.classList.add('future');
-                        }
-
-                        const isRecurring = ev.extendedProps?.type === 'recurring';
-                        const badgeText = isRecurring ? '🔄 Повтор' : '📌 Одноразова';
-
-                        li.innerHTML = `
-                            <div>
-                                <div class="event-title">${ev.title}</div>
-                                <span class="event-badge">${badgeText}</span>
-                            </div>
-                            <div class="event-date">${ev.start}</div>
-                        `;
-                        listEl.appendChild(li);
-                    });
-                }
-
-                renderEventList();
-
-                // Обробка форми додавання нових задач
-                const form = document.getElementById('taskForm');
-                form.addEventListener('submit', function(e) {
-                    e.preventDefault();
-
-                    const title = document.getElementById('title').value;
-                    const date = document.getElementById('eventDate').value;
-                    const type = document.getElementById('type').value;
-
-                    const newEvent = {
-                        id: String(Date.now()),
-                        title: title,
-                        start: date,
-                        extendedProps: { type: type }
-                    };
-
-                    // Оновлюємо масив, зберігаємо та перерендеримо компоненти
-                    events.push(newEvent);
-                    saveEvents();
-
-                    calendar.addEvent(newEvent);
-                    renderEventList();
-
-                    // Скидаємо форму
-                    form.reset();
-                });
-            });
+            document.getElementById('taskForm').onsubmit = async (e) => {{
+                e.preventDefault();
+                await fetch(`${{apiBase}}/api/tasks`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        title: document.getElementById('title').value,
+                        event_date: document.getElementById('eventDate').value,
+                        task_type: 'custom',
+                        freq: document.getElementById('freq').value
+                    }})
+                }});
+                loadTasks();
+            }};
         </script>
     </body>
     </html>
