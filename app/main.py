@@ -21,14 +21,13 @@ def init_db():
             title TEXT NOT NULL,
             event_date TEXT NOT NULL,
             task_type TEXT NOT NULL,
-            freq TEXT DEFAULT 'none',
-            interval INTEGER DEFAULT 1
+            freq TEXT DEFAULT 'none'
         )
     ''')
     conn.commit()
     conn.close()
 
-app = FastAPI(title="Zuzulka Home Ops API")
+app = FastAPI()
 init_db()
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -44,7 +43,6 @@ class TaskCreate(BaseModel):
     event_date: str
     task_type: str
     freq: Optional[str] = 'none'
-    interval: Optional[int] = 1
 
 @app.get("/api/tasks")
 async def get_tasks():
@@ -60,8 +58,8 @@ async def create_task(task: TaskCreate):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO zuzulka_tasks (title, event_date, task_type, freq, interval) VALUES (?, ?, ?, ?, ?)",
-        (task.title, task.event_date, task.task_type, task.freq, task.interval)
+        "INSERT INTO zuzulka_tasks (title, event_date, task_type, freq) VALUES (?, ?, ?, ?)",
+        (task.title, task.event_date, task.task_type, task.freq)
     )
     conn.commit()
     conn.close()
@@ -112,7 +110,9 @@ async def read_root(request: Request):
 
             document.addEventListener('DOMContentLoaded', async function() {{
                 calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
-                    initialView: 'dayGridMonth', locale: 'uk', plugins: [FullCalendar.rrulePlugin]
+                    initialView: 'dayGridMonth',
+                    locale: 'uk',
+                    plugins: [FullCalendar.rrulePlugin]
                 }});
                 calendar.render();
                 loadTasks();
@@ -123,7 +123,7 @@ async def read_root(request: Request):
                 const data = await res.json();
                 calendar.removeAllEvents();
                 data.forEach(t => {{
-                    if (t.freq !== 'none') {{
+                    if (t.freq && t.freq !== 'none') {{
                         calendar.addEvent({{ title: t.title, rrule: {{ freq: t.freq, dtstart: t.event_date }} }});
                     }} else {{
                         calendar.addEvent({{ title: t.title, start: t.event_date }});
