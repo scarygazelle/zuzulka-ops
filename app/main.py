@@ -74,14 +74,12 @@ async def read_root(request: Request):
     <head>
         <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/rrule@6.1.11/index.global.min.js"></script>
         <style>
             body {{ background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 20px; }}
             .container {{ display: grid; grid-template-columns: 2fr 1fr; gap: 20px; max-width: 1400px; margin: auto; }}
             .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; }}
             input, select {{ width: 100%; padding: 10px; background: #252525; border: 1px solid #444; color: white; margin-bottom: 10px; border-radius: 6px; }}
             .btn {{ background: #03a9f4; color: white; padding: 10px; border: none; width: 100%; border-radius: 6px; cursor: pointer; }}
-            .event-item {{ padding: 10px; margin-bottom: 8px; background: #252525; border-left: 5px solid #03a9f4; border-radius: 4px; }}
         </style>
     </head>
     <body>
@@ -96,46 +94,40 @@ async def read_root(request: Request):
                     <select id="freq">
                         <option value="none">Одноразова</option>
                         <option value="daily">Щодня</option>
-                        <option value="weekly">Щотижня</option>
-                        <option value="monthly">Щомісяця</option>
                     </select>
                     <button type="submit" class="btn">Додати</button>
                 </form>
-                <div id="eventList"></div>
             </div>
         </div>
         <script>
             const apiBase = "{root_path}";
             let calendar;
 
-            document.addEventListener('DOMContentLoaded', async function() {{
-                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+            document.addEventListener('DOMContentLoaded', function() {{
+                const calendarEl = document.getElementById('calendar');
+                calendar = new FullCalendar.Calendar(calendarEl, {{
                     initialView: 'dayGridMonth',
-                    locale: 'uk',
-                    plugins: [FullCalendar.rrulePlugin]
+                    locale: 'uk'
                 }});
                 calendar.render();
                 loadTasks();
             }});
 
             async function loadTasks() {{
-                const res = await fetch(`${{apiBase}}/api/tasks`);
-                const data = await res.json();
-                calendar.removeAllEvents();
-                data.forEach(t => {{
-                    if (t.freq && t.freq !== 'none') {{
-                        calendar.addEvent({{ title: t.title, rrule: {{ freq: t.freq, dtstart: t.event_date }} }});
-                    }} else {{
+                if (!calendar) return;
+                try {{
+                    const res = await fetch(`${{apiBase}}/api/tasks`);
+                    const data = await res.json();
+                    calendar.removeAllEvents();
+                    data.forEach(t => {{
                         calendar.addEvent({{ title: t.title, start: t.event_date }});
-                    }}
-                }});
-                document.getElementById('eventList').innerHTML = data.map(t =>
-                    `<div class="event-item">${{t.title}} - ${{t.event_date}}</div>`).join('');
+                    }});
+                }} catch(err) {{ console.error("Помилка завантаження:", err); }}
             }}
 
             document.getElementById('taskForm').onsubmit = async (e) => {{
                 e.preventDefault();
-                await fetch(`${{apiBase}}/api/tasks`, {{
+                const res = await fetch(`${{apiBase}}/api/tasks`, {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
@@ -145,7 +137,10 @@ async def read_root(request: Request):
                         freq: document.getElementById('freq').value
                     }})
                 }});
-                loadTasks();
+                if (res.ok) {{
+                    document.getElementById('taskForm').reset();
+                    loadTasks();
+                }}
             }};
         </script>
     </body>
