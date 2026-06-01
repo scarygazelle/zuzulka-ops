@@ -3,9 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import sqlite3
-import os
 
-# Використовуємо абсолютний шлях до БД
 DB_PATH = "/data/zuzulka.db"
 
 def get_db():
@@ -31,7 +29,12 @@ def init_db():
 app = FastAPI()
 init_db()
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# Middleware для коректної обробки Ingress шляху
+@app.middleware("http")
+async def add_ingress_path(request: Request, call_next):
+    root_path = request.headers.get("X-Ingress-Path", "")
+    request.scope["root_path"] = root_path
+    return await call_next(request)
 
 class TaskCreate(BaseModel):
     title: str
@@ -78,20 +81,21 @@ async def delete_task(task_id: int):
     return {"status": "ok"}
 
 @app.get("/", response_class=HTMLResponse)
-async def read_root():
-    return """
+async def read_root(request: Request):
+    root_path = request.scope.get("root_path", "")
+    return f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
         <style>
-            body { background: #121212; color: white; font-family: sans-serif; padding: 20px; }
-            .container { max-width: 900px; margin: auto; }
-            .card { background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; }
-            .task-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }
-            input, select { width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; box-sizing: border-box; }
-            .btn { cursor: pointer; padding: 10px; border: none; border-radius: 6px; color: white; font-weight: bold; }
+            body {{ background: #121212; color: white; font-family: sans-serif; padding: 20px; }}
+            .container {{ max-width: 900px; margin: auto; }}
+            .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
+            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }}
+            input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; box-sizing: border-box; }}
+            .btn {{ cursor: pointer; padding: 10px; border: none; border-radius: 6px; color: white; font-weight: bold; }}
         </style>
     </head>
     <body>
@@ -115,36 +119,34 @@ async def read_root():
             <div class="card" id="taskList"></div>
         </div>
         <script>
+            const rootPath = "{root_path}";
             let calendar;
-            document.addEventListener('DOMContentLoaded', () => {
-                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), { initialView: 'dayGridMonth', locale: 'uk' });
+            document.addEventListener('DOMContentLoaded', () => {{
+                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{ initialView: 'dayGridMonth', locale: 'uk' }});
                 calendar.render();
                 loadTasks();
-            });
+            }});
 
-            async function loadTasks() {
-                try {
-                    const res = await fetch('/api/tasks');
-                    if (!res.ok) throw new Error('Network response was not ok');
-                    const tasks = await res.json();
-                    calendar.removeAllEvents();
-                    const list = document.getElementById('taskList');
-                    list.innerHTML = '<h3>Список задач</h3>';
-                    tasks.forEach(t => {
-                        calendar.addEvent({ title: t.title, start: t.event_date });
-                        list.innerHTML += `<div class="task-item">
-                            <span>${t.title} (${t.event_date})</span>
-                            <div>
-                                <button class="btn" style="background:#ff9800" onclick="editTask(${t.id})">✎</button>
-                                <button class="btn" style="background:#f44336" onclick="deleteTask(${t.id})">🗑️</button>
-                            </div>
-                        </div>`;
-                    });
-                } catch (e) { console.error("Error loading tasks:", e); }
-            }
+            async function loadTasks() {{
+                const res = await fetch(rootPath + '/api/tasks');
+                const tasks = await res.json();
+                calendar.removeAllEvents();
+                const list = document.getElementById('taskList');
+                list.innerHTML = '<h3>Список задач</h3>';
+                tasks.forEach(t => {{
+                    calendar.addEvent({{ title: t.title, start: t.event_date }});
+                    list.innerHTML += `<div class="task-item">
+                        <span>${{t.title}} (${{t.event_date}})</span>
+                        <div>
+                            <button class="btn" style="background:#ff9800" onclick="editTask(${{t.id}})">✎</button>
+                            <button class="btn" style="background:#f44336" onclick="deleteTask(${{t.id}})">🗑️</button>
+                        </div>
+                    </div>`;
+                }});
+            }}
 
-            async function editTask(id) {
-                const res = await fetch('/api/tasks');
+            async function editTask(id) {{
+                const res = await fetch(rootPath + '/api/tasks');
                 const tasks = await res.json();
                 const t = tasks.find(x => x.id == id);
                 document.getElementById('taskId').value = t.id;
@@ -153,33 +155,33 @@ async def read_root():
                 document.getElementById('freq').value = t.freq;
                 document.getElementById('interval').style.display = (t.freq === 'custom' ? 'block' : 'none');
                 document.getElementById('interval').value = t.interval_days;
-            }
+            }}
 
-            document.getElementById('taskForm').onsubmit = async (e) => {
+            document.getElementById('taskForm').onsubmit = async (e) => {{
                 e.preventDefault();
                 const id = document.getElementById('taskId').value;
-                const url = id ? `/api/tasks/${id}` : '/api/tasks';
-                await fetch(url, {
+                const url = rootPath + (id ? '/api/tasks/' + id : '/api/tasks');
+                await fetch(url, {{
                     method: id ? 'PUT' : 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
                         title: document.getElementById('title').value,
                         event_date: document.getElementById('eventDate').value,
                         freq: document.getElementById('freq').value,
                         interval_days: parseInt(document.getElementById('interval').value || 0)
-                    })
-                });
+                    }})
+                }});
                 document.getElementById('taskForm').reset();
                 document.getElementById('taskId').value = '';
                 loadTasks();
-            };
+            }};
 
-            async function deleteTask(id) {
-                if(confirm("Видалити?")) {
-                    await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+            async function deleteTask(id) {{
+                if(confirm("Видалити?")) {{
+                    await fetch(rootPath + '/api/tasks/' + id, {{ method: 'DELETE' }});
                     loadTasks();
-                }
-            }
+                }}
+            }}
         </script>
     </body>
     </html>
