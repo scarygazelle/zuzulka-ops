@@ -187,7 +187,7 @@ def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
 # ─────────────────────────────────────────────
 #  API Routes
 # ─────────────────────────────────────────────
-@app.get("/api/debug")
+@app.get("/debug")
 async def debug():
     """Quick health-check — open in browser to verify the API is alive."""
     import sys
@@ -197,6 +197,7 @@ async def debug():
 
 
 
+@app.get("/tasks")
 async def get_tasks():
     with get_db() as conn:
         rows = conn.execute(
@@ -205,7 +206,7 @@ async def get_tasks():
         return [dict(r) for r in rows]
 
 
-@app.post("/api/tasks", status_code=201)
+@app.post("/tasks", status_code=201)
 async def create_task(task: TaskCreate):
     log.info("CREATE: %s", task.dict())
     with get_db() as conn:
@@ -217,7 +218,7 @@ async def create_task(task: TaskCreate):
         return {"id": cursor.lastrowid, "status": "created"}
 
 
-@app.put("/api/tasks/{task_id}")
+@app.put("/tasks/{task_id}")
 async def update_task(task_id: int, task: TaskCreate):
     log.info("UPDATE %s: %s", task_id, task.dict())
     with get_db() as conn:
@@ -231,7 +232,7 @@ async def update_task(task_id: int, task: TaskCreate):
         return {"status": "updated"}
 
 
-@app.post("/api/tasks/{task_id}/done")
+@app.post("/tasks/{task_id}/done")
 async def complete_task(task_id: int):
     with get_db() as conn:
         row = conn.execute(
@@ -248,7 +249,7 @@ async def complete_task(task_id: int):
         return {"status": "done"}
 
 
-@app.delete("/api/tasks/{task_id}", status_code=204)
+@app.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: int):
     with get_db() as conn:
         result = conn.execute("DELETE FROM zuzulka_tasks WHERE id=?", (task_id,))
@@ -258,7 +259,7 @@ async def delete_task(task_id: int):
 
 
 # New endpoint: return calendar events (expands recurring tasks)
-@app.get("/api/calendar-events")
+@app.get("/calendar-events")
 async def get_calendar_events():
     with get_db() as conn:
         rows = conn.execute(
@@ -671,8 +672,8 @@ function escHtml(s) {
 async function loadTasks() {
   try {
     const [tasksRes, eventsRes] = await Promise.all([
-      fetch(ROOT + '/api/tasks'),
-      fetch(ROOT + '/api/calendar-events')
+      fetch(ROOT + '/tasks'),
+      fetch(ROOT + '/calendar-events')
     ]);
     if (!tasksRes.ok) throw new Error('tasks HTTP ' + tasksRes.status);
     if (!eventsRes.ok) throw new Error('events HTTP ' + eventsRes.status);
@@ -795,7 +796,7 @@ async function submitForm() {
   };
 
   try {
-    const url    = ROOT + (id ? '/api/tasks/' + id : '/api/tasks');
+    const url    = ROOT + (id ? '/tasks/' + id : '/tasks');
     const method = id ? 'PUT' : 'POST';
     const res    = await fetch(url, {
       method,
@@ -817,7 +818,7 @@ async function submitForm() {
 
 async function doneTask(id) {
   try {
-    const res = await fetch(ROOT + '/api/tasks/' + id + '/done', { method:'POST' });
+    const res = await fetch(ROOT + '/tasks/' + id + '/done', { method:'POST' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     toast('Виконано! 🎉');
     await loadTasks();
@@ -830,7 +831,7 @@ async function doneTask(id) {
 async function deleteTask(id) {
   if (!confirm('Видалити завдання?')) return;
   try {
-    const res = await fetch(ROOT + '/api/tasks/' + id, { method:'DELETE' });
+    const res = await fetch(ROOT + '/tasks/' + id, { method:'DELETE' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     toast('Видалено');
     await loadTasks();
