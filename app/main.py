@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import sqlite3
 from typing import Optional
+from datetime import date
 
 DB_PATH = "/data/zuzulka.db"
 
@@ -63,6 +64,16 @@ async def create_task(task: TaskCreate):
     conn.close()
     return {"status": "success"}
 
+@app.put("/api/tasks/{task_id}")
+async def update_task(task_id: int, task: TaskCreate):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=? WHERE id=?",
+                   (task.title, task.event_date, task.freq, task.interval_days, task_id))
+    conn.commit()
+    conn.close()
+    return {"status": "updated"}
+
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: int):
     conn = get_db()
@@ -85,11 +96,12 @@ async def read_root(request: Request):
             body {{ background: #121212; color: white; font-family: sans-serif; padding: 20px; }}
             .container {{ max-width: 1000px; margin: auto; }}
             .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
-            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }}
+            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 12px; margin-bottom: 8px; border-radius: 8px; border-left: 6px solid #444; }}
+            .past {{ background: #2c2c2c; border-color: #777; color: #aaa; }}
+            .today {{ background: #1b3a1b; border-color: #4caf50; color: #fff; }}
+            .future {{ background: #3a2b1b; border-color: #ff9800; color: #fff; }}
             .btns-group {{ display: flex; gap: 5px; }}
-            .btn-icon {{ cursor: pointer; padding: 5px 8px; border: none; border-radius: 4px; color: white; font-size: 14px; }}
-            .btn-edit {{ background: #ff9800; }}
-            .btn-del {{ background: #f44336; }}
+            .btn-icon {{ cursor: pointer; padding: 6px 10px; border: none; border-radius: 4px; color: white; font-size: 14px; }}
             input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; box-sizing: border-box; }}
             .btn-submit {{ background: #03a9f4; border:none; padding:10px; width:100%; border-radius:6px; color:white; font-weight:bold; }}
         </style>
@@ -99,8 +111,9 @@ async def read_root(request: Request):
             <h1>Бортовий Журнал "Зузулька" 🚀</h1>
             <div class="card"><div id="calendar"></div></div>
             <div class="card">
-                <h3>➕ Нова задача</h3>
+                <h3 id="formTitle">➕ Нова задача</h3>
                 <form id="taskForm">
+                    <input type="hidden" id="taskId">
                     <input type="text" id="title" placeholder="Назва" required>
                     <input type="date" id="eventDate" required>
                     <select id="freq" onchange="toggleInterval(this.value)">
@@ -108,7 +121,8 @@ async def read_root(request: Request):
                         <option value="custom">Кожні Х днів</option>
                     </select>
                     <input type="number" id="interval" placeholder="Кількість днів" style="display:none;">
-                    <button type="submit" class="btn-submit">Додати</button>
+                    <button type="submit" class="btn-submit">Зберегти</button>
+                    <button type="button" id="cancelBtn" class="btn-submit" style="display:none; background:#555; margin-top:5px;" onclick="resetForm()">Скасувати</button>
                 </form>
             </div>
             <div class="card">
@@ -118,42 +132,66 @@ async def read_root(request: Request):
         </div>
         <script>
             const apiBase = "{root_path}";
-            let calendar;
+            let calendar, currentTasks = [];
 
             document.addEventListener('DOMContentLoaded', function() {{
-                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
-                    initialView: 'dayGridMonth',
-                    locale: 'uk'
-                }});
+                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{ initialView: 'dayGridMonth', locale: 'uk' }});
                 calendar.render();
                 loadTasks();
             }});
 
             function toggleInterval(val) {{ document.getElementById('interval').style.display = val === 'custom' ? 'block' : 'none'; }}
 
+            function resetForm() {{
+                document.getElementById('taskForm').reset();
+                document.getElementById('taskId').value = '';
+                document.getElementById('formTitle').innerText = '➕ Нова задача';
+                document.getElementById('cancelBtn').style.display = 'none';
+            }}
+
             async function loadTasks() {{
                 const res = await fetch(`${{apiBase}}/api/tasks`);
-                const tasks = await res.json();
+                currentTasks = await res.json();
                 calendar.removeAllEvents();
                 const list = document.getElementById('taskList');
                 list.innerHTML = '';
-                tasks.forEach(t => {{
+                const today = new Date().toISOString().split('T')[0];
+
+                currentTasks.forEach(t => {{
                     calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
+
+                    let statusClass = t.event_date < today ? 'past' : (t.event_date === today ? 'today' : 'future');
                     const div = document.createElement('div');
-                    div.className = 'task-item';
+                    div.className = `task-item ${{statusClass}}`;
                     div.innerHTML = `<span><b>${{t.title}}</b> (${{t.event_date}})</span>
                         <div class="btns-group">
-                            <button class="btn-icon btn-edit" onclick="alert('Редагування ID: ${{t.id}}')">✎</button>
-                            <button class="btn-icon btn-del" onclick="deleteTask(${{t.id}})">🗑️</button>
+                            <button class="btn-icon" style="background:#ff9800" onclick="editTask(${{t.id}})">✎</button>
+                            <button class="btn-icon" style="background:#f44336" onclick="deleteTask(${{t.id}})">🗑️</button>
                         </div>`;
                     list.appendChild(div);
                 }});
             }}
 
+            function editTask(id) {{
+                const t = currentTasks.find(x => x.id === id);
+                document.getElementById('taskId').value = t.id;
+                document.getElementById('title').value = t.title;
+                document.getElementById('eventDate').value = t.event_date;
+                document.getElementById('freq').value = t.freq;
+                toggleInterval(t.freq);
+                if(t.freq === 'custom') document.getElementById('interval').value = t.interval_days;
+                document.getElementById('formTitle').innerText = '✏️ Редагувати задачу';
+                document.getElementById('cancelBtn').style.display = 'block';
+            }}
+
             document.getElementById('taskForm').onsubmit = async (e) => {{
                 e.preventDefault();
-                await fetch(`${{apiBase}}/api/tasks`, {{
-                    method: 'POST',
+                const id = document.getElementById('taskId').value;
+                const method = id ? 'PUT' : 'POST';
+                const url = id ? `${{apiBase}}/api/tasks/${{id}}` : `${{apiBase}}/api/tasks`;
+
+                await fetch(url, {{
+                    method: method,
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{
                         title: document.getElementById('title').value,
@@ -162,8 +200,7 @@ async def read_root(request: Request):
                         interval_days: parseInt(document.getElementById('interval').value || 0)
                     }})
                 }});
-                document.getElementById('taskForm').reset();
-                toggleInterval('none');
+                resetForm();
                 loadTasks();
             }};
 
