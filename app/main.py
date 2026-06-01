@@ -86,8 +86,9 @@ async def generic_error_handler(request: Request, exc: Exception):
 
 @app.middleware("http")
 async def ingress_path_middleware(request: Request, call_next):
-    root_path = request.headers.get("X-Ingress-Path", "")
-    request.scope["root_path"] = root_path
+    # Store ingress path in state — never mutate scope["root_path"]
+    # Mutating scope breaks Starlette routing and causes 405 errors
+    request.state.ingress_path = request.headers.get("X-Ingress-Path", "")
     return await call_next(request)
 
 
@@ -276,7 +277,7 @@ async def get_calendar_events():
 # ─────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    root_path = request.scope.get("root_path", "")
+    root_path = getattr(request.state, "ingress_path", "")
     return HTMLResponse(content=HTML_PAGE.replace("__ROOT_PATH__", root_path))
 
 
