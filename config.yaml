@@ -1,6 +1,6 @@
 name: "Zuzulka Home Ops"
 description: "Home Assistant Board Log API"
-version: "1.0.3"
+version: "1.0.4"
 slug: "zuzulka_home_ops"
 arch:
   - amd64
@@ -8,4 +8,4 @@ init: false
 ingress: true
 ingress_port: 8000
 panel_icon: "mdi:book-open-page-variant"
-panel_title: "Zuzulka Pulse"
+panel_title: "Zuzulka "
