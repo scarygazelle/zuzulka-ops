@@ -83,10 +83,11 @@ async def read_root(request: Request):
         <style>
             body {{ background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 20px; }}
             .container {{ display: grid; grid-template-columns: 2fr 1fr; gap: 20px; max-width: 1400px; margin: auto; }}
-            .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; }}
+            .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
             .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }}
-            .btn {{ cursor: pointer; padding: 5px 10px; border: none; border-radius: 4px; color: white; }}
-            .del {{ background: #f44336; }}
+            input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; }}
+            .btn {{ cursor: pointer; padding: 10px; border: none; border-radius: 6px; color: white; width: 100%; background: #03a9f4; }}
+            .btn-del {{ background: #f44336; width: auto; padding: 5px 10px; }}
         </style>
     </head>
     <body>
@@ -94,6 +95,14 @@ async def read_root(request: Request):
         <div class="container">
             <div class="card"><div id="calendar"></div></div>
             <div class="card">
+                <h3>➕ Додати задачу</h3>
+                <form id="taskForm">
+                    <input type="text" id="title" placeholder="Назва" required>
+                    <input type="date" id="eventDate" required>
+                    <select id="freq"><option value="none">Одноразова</option></select>
+                    <button type="submit" class="btn">Додати</button>
+                </form>
+                <hr style="border:0; border-top:1px solid #444; margin: 20px 0;">
                 <h3>Список задач</h3>
                 <div id="taskList"></div>
             </div>
@@ -114,20 +123,34 @@ async def read_root(request: Request):
                 calendar.removeAllEvents();
                 const list = document.getElementById('taskList');
                 list.innerHTML = '';
-
                 tasks.forEach(t => {{
                     calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
-
                     const div = document.createElement('div');
                     div.className = 'task-item';
                     div.innerHTML = `<span>${{t.title}} (${{t.event_date}})</span>
-                                     <button class="btn del" onclick="deleteTask(${{t.id}})">🗑️</button>`;
+                                     <button class="btn btn-del" onclick="deleteTask(${{t.id}})">🗑️</button>`;
                     list.appendChild(div);
                 }});
             }}
 
+            document.getElementById('taskForm').onsubmit = async (e) => {{
+                e.preventDefault();
+                await fetch(`${{apiBase}}/api/tasks`, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        title: document.getElementById('title').value,
+                        event_date: document.getElementById('eventDate').value,
+                        task_type: 'custom',
+                        freq: document.getElementById('freq').value
+                    }})
+                }});
+                document.getElementById('taskForm').reset();
+                loadTasks();
+            }};
+
             async function deleteTask(id) {{
-                if(!confirm("Видалити цю задачу?")) return;
+                if(!confirm("Видалити задачу?")) return;
                 await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }});
                 loadTasks();
             }}
