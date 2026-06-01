@@ -33,11 +33,10 @@ def init_db():
                 done           INTEGER DEFAULT 0
             )
         """)
-        # migrate: add `done` column if it doesn't exist yet
         try:
             conn.execute("ALTER TABLE zuzulka_tasks ADD COLUMN done INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
         conn.commit()
 
 
@@ -62,14 +61,51 @@ class TaskCreate(BaseModel):
     title: str
     event_date: str
     freq: str = "none"
-    interval_days: int = 0
+    interval_days: int = 0   # Pydantic coerces None/null → 0 via default
 
 
 # ─────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────
+def next_occurrences(task: dict, months_ahead: int = 3) -> list[str]:
+    """
+    Return all future occurrence dates for a recurring task,
+    from today up to `months_ahead` months from now.
+    For 'none' tasks returns just the original event_date.
+    """
+    freq = task["freq"]
+    start = date.fromisoformat(task["event_date"])
+    today = date.today()
+    cutoff = today + timedelta(days=months_ahead * 31)
+
+    if freq == "none":
+        return [task["event_date"]]
+
+    if freq == "daily":
+        delta = timedelta(days=1)
+    elif freq == "weekly":
+        delta = timedelta(weeks=1)
+    elif freq == "monthly":
+        delta = timedelta(days=30)
+    elif freq == "custom":
+        delta = timedelta(days=max(task["interval_days"] or 1, 1))
+    else:
+        return [task["event_date"]]
+
+    # Advance start to first occurrence >= today
+    current = start
+    while current < today:
+        current += delta
+
+    dates = []
+    while current <= cutoff:
+        dates.append(current.isoformat())
+        current += delta
+    return dates
+
+
 def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
-    """Bump event_date forward and clear done flag for recurring tasks."""
+    """Bump event_date to next future occurrence after marking done."""
     freq = task["freq"]
     if freq == "none":
         return
@@ -82,15 +118,12 @@ def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
     elif freq == "weekly":
         delta = timedelta(weeks=1)
     elif freq == "monthly":
-        # approximate — add 30 days
         delta = timedelta(days=30)
     elif freq == "custom":
-        days = task["interval_days"] or 1
-        delta = timedelta(days=days)
+        delta = timedelta(days=max(task["interval_days"] or 1, 1))
     else:
         return
 
-    # Advance until the next occurrence is in the future
     while event <= today:
         event += delta
 
@@ -128,7 +161,7 @@ async def create_task(task: TaskCreate):
 async def update_task(task_id: int, task: TaskCreate):
     with get_db() as conn:
         result = conn.execute(
-            "UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=? WHERE id=?",
+            "UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=?, done=0 WHERE id=?",
             (task.title, task.event_date, task.freq, task.interval_days, task_id),
         )
         if result.rowcount == 0:
@@ -139,21 +172,17 @@ async def update_task(task_id: int, task: TaskCreate):
 
 @app.post("/api/tasks/{task_id}/done")
 async def complete_task(task_id: int):
-    """Mark a task done. Recurring tasks get their date advanced automatically."""
     with get_db() as conn:
         row = conn.execute(
             "SELECT * FROM zuzulka_tasks WHERE id=?", (task_id,)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
-
         task = dict(row)
         if task["freq"] != "none":
             advance_recurring_task(conn, task)
         else:
-            conn.execute(
-                "UPDATE zuzulka_tasks SET done=1 WHERE id=?", (task_id,)
-            )
+            conn.execute("UPDATE zuzulka_tasks SET done=1 WHERE id=?", (task_id,))
             conn.commit()
         return {"status": "done"}
 
@@ -161,12 +190,25 @@ async def complete_task(task_id: int):
 @app.delete("/api/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: int):
     with get_db() as conn:
-        result = conn.execute(
-            "DELETE FROM zuzulka_tasks WHERE id=?", (task_id,)
-        )
+        result = conn.execute("DELETE FROM zuzulka_tasks WHERE id=?", (task_id,))
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Task not found")
         conn.commit()
+
+
+# New endpoint: return calendar events (expands recurring tasks)
+@app.get("/api/calendar-events")
+async def get_calendar_events():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM zuzulka_tasks WHERE done=0 ORDER BY event_date ASC"
+        ).fetchall()
+    events = []
+    for row in rows:
+        t = dict(row)
+        for d in next_occurrences(t):
+            events.append({"id": t["id"], "title": t["title"], "date": d, "freq": t["freq"]})
+    return events
 
 
 # ─────────────────────────────────────────────
@@ -179,7 +221,7 @@ async def read_root(request: Request):
 
 
 # ─────────────────────────────────────────────
-#  HTML / CSS / JS  (single-file SPA)
+#  HTML / CSS / JS
 # ─────────────────────────────────────────────
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="uk">
@@ -191,7 +233,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Unbounded:wght@300;600;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
 <style>
-/* ── Reset & Variables ──────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -202,6 +243,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   --accent:    #4fffb0;
   --accent2:   #ff4f81;
   --amber:     #ffd166;
+  --blue:      #4fa8ff;
   --text:      #e8eaf0;
   --muted:     #606878;
   --radius:    14px;
@@ -215,13 +257,12 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.6;
+  font-size: 15px;          /* ↑ was 13px */
+  line-height: 1.65;
   min-height: 100vh;
   overflow-x: hidden;
 }
 
-/* ── Noise texture overlay ──────────────────── */
 body::before {
   content: '';
   position: fixed; inset: 0;
@@ -229,58 +270,57 @@ body::before {
   pointer-events: none; z-index: 0;
 }
 
-/* ── Layout ─────────────────────────────────── */
 .shell {
   position: relative; z-index: 1;
-  max-width: 980px; margin: 0 auto;
-  padding: 28px 20px 60px;
+  max-width: 1060px; margin: 0 auto;
+  padding: 30px 24px 70px;
 }
 
-/* ── Header ─────────────────────────────────── */
+/* ── Header ─────────────────── */
 header {
-  display: flex; align-items: baseline; gap: 14px;
-  margin-bottom: 32px;
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 28px;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 18px;
+  padding-bottom: 20px;
 }
 .logo {
   font-family: var(--font-head);
-  font-weight: 900; font-size: 22px;
+  font-weight: 900; font-size: 26px;
   letter-spacing: -0.5px;
   background: linear-gradient(135deg, var(--accent), #00e5ff);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
 .logo-sub {
-  font-family: var(--font-mono);
-  font-size: 11px; color: var(--muted);
+  font-size: 12px; color: var(--muted);
   letter-spacing: 2px; text-transform: uppercase;
+  margin-top: 2px;
 }
 .badge {
   margin-left: auto;
   background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 40px; padding: 4px 12px;
-  font-size: 11px; color: var(--muted);
+  border-radius: 40px; padding: 6px 16px;
+  font-size: 13px; color: var(--muted);
   letter-spacing: 1px;
 }
 
-/* ── Grid ────────────────────────────────────── */
-.grid { display: grid; grid-template-columns: 1fr 360px; gap: 18px; }
-@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+/* ── Grid ────────────────────── */
+.grid { display: grid; grid-template-columns: 1fr 400px; gap: 20px; }
+@media (max-width: 780px) { .grid { grid-template-columns: 1fr; } }
 
-/* ── Cards ───────────────────────────────────── */
+/* ── Cards ───────────────────── */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 22px;
+  padding: 24px;
   animation: fadeUp .35s ease both;
 }
-.card + .card { margin-top: 18px; }
+.card + .card { margin-top: 20px; }
 .card-title {
   font-family: var(--font-head);
-  font-size: 10px; font-weight: 600;
+  font-size: 11px; font-weight: 600;
   letter-spacing: 3px; text-transform: uppercase;
-  color: var(--muted); margin-bottom: 16px;
+  color: var(--muted); margin-bottom: 18px;
 }
 
 @keyframes fadeUp {
@@ -288,11 +328,28 @@ header {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── Calendar overrides ──────────────────────── */
+/* ── Stats ───────────────────── */
+.stats { display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.stat {
+  flex: 1; min-width: 90px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px; text-align: center;
+}
+.stat-val {
+  font-family: var(--font-head); font-size: 28px; font-weight: 900; line-height: 1;
+}
+.stat-val.green  { color: var(--accent); }
+.stat-val.red    { color: var(--accent2); }
+.stat-val.yellow { color: var(--amber); }
+.stat-val.blue   { color: var(--blue); }
+.stat-label { font-size: 11px; color: var(--muted); margin-top: 5px; letter-spacing: 1px; text-transform: uppercase; }
+
+/* ── Calendar overrides ──────── */
 .fc { --fc-border-color: var(--border) !important; }
+
 .fc .fc-toolbar-title {
   font-family: var(--font-head) !important;
-  font-size: 15px !important; font-weight: 600 !important;
+  font-size: 17px !important; font-weight: 600 !important;
   color: var(--text) !important;
 }
 .fc .fc-button {
@@ -300,32 +357,45 @@ header {
   border: 1px solid var(--border) !important;
   border-radius: 8px !important;
   font-family: var(--font-mono) !important;
-  font-size: 11px !important; color: var(--text) !important;
-  padding: 4px 10px !important; box-shadow: none !important;
+  font-size: 13px !important; color: var(--text) !important;
+  padding: 5px 12px !important; box-shadow: none !important;
 }
 .fc .fc-button:hover { background: var(--border) !important; }
 .fc .fc-daygrid-day { background: transparent !important; }
-.fc .fc-daygrid-day-number { color: var(--muted) !important; font-size: 11px !important; }
-.fc .fc-daygrid-day.fc-day-today { background: rgba(79,255,176,.06) !important; }
-.fc .fc-event {
-  background: var(--accent) !important; border: none !important;
-  color: #000 !important; border-radius: 4px !important;
-  font-size: 10px !important; font-family: var(--font-mono) !important;
-  padding: 1px 4px !important;
+.fc .fc-daygrid-day-number {
+  color: var(--muted) !important; font-size: 13px !important;
 }
-.fc .fc-col-header-cell-cushion { color: var(--muted) !important; font-size: 10px !important; }
+.fc .fc-daygrid-day.fc-day-today { background: rgba(79,255,176,.07) !important; }
 
-/* ── Form ────────────────────────────────────── */
-.field { margin-bottom: 12px; }
+/* ── Calendar event chips — DARK TEXT for readability ── */
+.fc .fc-event {
+  border: none !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  font-family: var(--font-mono) !important;
+  font-weight: 700 !important;
+  padding: 2px 5px !important;
+  color: #0a0c10 !important;   /* always dark text on colored bg */
+}
+.fc .fc-event.ev-overdue { background: #ff4f81 !important; }
+.fc .fc-event.ev-today   { background: #4fffb0 !important; }
+.fc .fc-event.ev-future  { background: #4fa8ff !important; }
+.fc .fc-event.ev-recurr  { background: var(--amber) !important; }
+
+.fc .fc-col-header-cell-cushion { color: var(--muted) !important; font-size: 12px !important; }
+.fc .fc-daygrid-more-link { color: var(--muted) !important; font-size: 11px !important; }
+
+/* ── Form ────────────────────── */
+.field { margin-bottom: 14px; }
 .field label {
-  display: block; font-size: 10px; letter-spacing: 2px;
-  text-transform: uppercase; color: var(--muted); margin-bottom: 5px;
+  display: block; font-size: 11px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
 }
 input[type=text], input[type=date], input[type=number], select {
-  width: 100%; padding: 10px 12px;
+  width: 100%; padding: 12px 14px;
   background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text); border-radius: 8px;
-  font-family: var(--font-mono); font-size: 13px;
+  color: var(--text); border-radius: 10px;
+  font-family: var(--font-mono); font-size: 15px;
   outline: none; transition: border-color .2s;
   -webkit-appearance: none;
 }
@@ -336,77 +406,76 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.6); curso
 .btn {
   cursor: pointer; border: none; border-radius: 8px;
   font-family: var(--font-mono); font-weight: 700;
-  font-size: 12px; padding: 10px 16px;
+  font-size: 14px; padding: 11px 18px;
   transition: opacity .15s, transform .1s;
   white-space: nowrap;
 }
-.btn:hover { opacity: .85; }
+.btn:hover  { opacity: .85; }
 .btn:active { transform: scale(.97); }
-.btn-primary { background: var(--accent); color: #000; width: 100%; padding: 12px; }
-.btn-icon { padding: 7px 10px; font-size: 13px; line-height: 1; }
-.btn-edit  { background: rgba(255,209,102,.15); color: var(--amber); border: 1px solid rgba(255,209,102,.25); }
-.btn-done  { background: rgba(79,255,176,.12);  color: var(--accent); border: 1px solid rgba(79,255,176,.25); }
-.btn-del   { background: rgba(255,79,129,.12);  color: var(--accent2); border: 1px solid rgba(255,79,129,.25); }
 
-/* ── Task list ───────────────────────────────── */
+.btn-primary {
+  background: var(--accent); color: #000;
+  width: 100%; padding: 14px; font-size: 15px;
+}
+.btn-cancel {
+  display: none; width: 100%; margin-top: 10px;
+  background: transparent;
+  border: 1px solid var(--border); color: var(--muted);
+}
+.btn-icon { padding: 8px 11px; font-size: 15px; line-height: 1; }
+.btn-edit  { background: rgba(255,209,102,.15); color: var(--amber);  border: 1px solid rgba(255,209,102,.3); }
+.btn-done  { background: rgba(79,255,176,.12);  color: var(--accent); border: 1px solid rgba(79,255,176,.3); }
+.btn-del   { background: rgba(255,79,129,.12);  color: var(--accent2);border: 1px solid rgba(255,79,129,.3); }
+
+/* ── Task list ───────────────── */
 .task-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
   background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 10px; margin-bottom: 8px;
+  border-radius: 12px; margin-bottom: 10px;
   transition: border-color .2s;
   animation: fadeUp .25s ease both;
 }
 .task-item:hover { border-color: #333b4a; }
-.task-item.done-item { opacity: .4; }
+.task-item.done-item { opacity: .38; }
 .task-item.done-item .task-title { text-decoration: line-through; }
 
 .task-info { flex: 1; min-width: 0; }
 .task-title {
-  font-size: 13px; color: var(--text);
+  font-size: 15px; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.task-meta {
-  display: flex; gap: 8px; margin-top: 3px; flex-wrap: wrap;
-}
+.task-meta { display: flex; gap: 8px; margin-top: 5px; flex-wrap: wrap; }
+
 .tag {
-  font-size: 10px; padding: 2px 7px; border-radius: 20px;
-  letter-spacing: .5px;
+  font-size: 11px; padding: 3px 9px; border-radius: 20px; letter-spacing: .5px;
 }
-.tag-date { background: rgba(0,229,255,.08); color: #00e5ff; border: 1px solid rgba(0,229,255,.2); }
-.tag-freq { background: rgba(255,209,102,.08); color: var(--amber); border: 1px solid rgba(255,209,102,.2); }
-.tag-overdue { background: rgba(255,79,129,.12); color: var(--accent2); border: 1px solid rgba(255,79,129,.3); }
-.tag-today { background: rgba(79,255,176,.1); color: var(--accent); border: 1px solid rgba(79,255,176,.3); }
+.tag-date   { background: rgba(79,168,255,.1);  color: var(--blue);   border: 1px solid rgba(79,168,255,.25); }
+.tag-freq   { background: rgba(255,209,102,.1); color: var(--amber);  border: 1px solid rgba(255,209,102,.25); }
+.tag-overdue{ background: rgba(255,79,129,.14); color: var(--accent2);border: 1px solid rgba(255,79,129,.35); }
+.tag-today  { background: rgba(79,255,176,.12); color: var(--accent); border: 1px solid rgba(79,255,176,.35); }
 
-.task-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.task-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
-/* ── Empty state ──────────────────────────────── */
+/* ── Empty state ─────────────── */
 .empty {
-  text-align: center; padding: 40px 20px;
-  color: var(--muted); font-size: 12px; letter-spacing: 1px;
+  text-align: center; padding: 44px 20px;
+  color: var(--muted); font-size: 13px; letter-spacing: 1px;
 }
-.empty-icon { font-size: 32px; display: block; margin-bottom: 10px; }
+.empty-icon { font-size: 34px; display: block; margin-bottom: 12px; }
 
-/* ── Stats row ───────────────────────────────── */
-.stats {
-  display: flex; gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
-}
-.stat {
-  flex: 1; min-width: 80px;
+/* ── Toast ───────────────────── */
+#toast {
+  position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px);
   background: var(--surface2); border: 1px solid var(--border);
-  border-radius: 10px; padding: 12px 14px;
-  text-align: center;
+  color: var(--text); padding: 12px 24px; border-radius: 40px;
+  font-size: 14px; pointer-events: none;
+  opacity: 0; transition: opacity .25s, transform .25s;
+  z-index: 999;
 }
-.stat-val {
-  font-family: var(--font-head); font-size: 22px; font-weight: 900;
-  line-height: 1;
-}
-.stat-val.green  { color: var(--accent); }
-.stat-val.red    { color: var(--accent2); }
-.stat-val.yellow { color: var(--amber); }
-.stat-label { font-size: 10px; color: var(--muted); margin-top: 4px; letter-spacing: 1px; text-transform: uppercase; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.err  { border-color: var(--accent2); color: var(--accent2); }
 
-/* ── Scrollbar ────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
@@ -423,16 +492,16 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.6); curso
     <div class="badge" id="clock">──</div>
   </header>
 
-  <!-- Stats -->
   <div class="stats">
-    <div class="stat"><div class="stat-val green" id="st-total">0</div><div class="stat-label">Всього</div></div>
-    <div class="stat"><div class="stat-val red"   id="st-over">0</div><div class="stat-label">Прострочено</div></div>
-    <div class="stat"><div class="stat-val yellow" id="st-today">0</div><div class="stat-label">Сьогодні</div></div>
-    <div class="stat"><div class="stat-val green"  id="st-rec">0</div><div class="stat-label">Регулярних</div></div>
+    <div class="stat"><div class="stat-val green"  id="st-total">–</div><div class="stat-label">Всього</div></div>
+    <div class="stat"><div class="stat-val red"    id="st-over">–</div><div class="stat-label">Прострочено</div></div>
+    <div class="stat"><div class="stat-val yellow" id="st-today">–</div><div class="stat-label">Сьогодні</div></div>
+    <div class="stat"><div class="stat-val blue"   id="st-rec">–</div><div class="stat-label">Регулярних</div></div>
   </div>
 
   <div class="grid">
-    <!-- Left column -->
+
+    <!-- Left: calendar + task list -->
     <div>
       <div class="card" style="animation-delay:.05s">
         <div class="card-title">Календар</div>
@@ -444,9 +513,9 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.6); curso
       </div>
     </div>
 
-    <!-- Right column: form -->
+    <!-- Right: sticky form -->
     <div>
-      <div class="card" style="animation-delay:.15s; position: sticky; top: 20px;">
+      <div class="card" style="animation-delay:.15s; position:sticky; top:20px;">
         <div class="card-title" id="formMode">Нове завдання</div>
 
         <input type="hidden" id="taskId">
@@ -475,20 +544,31 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.6); curso
         </div>
 
         <button class="btn btn-primary" onclick="submitForm()">Зберегти завдання</button>
-        <button class="btn" id="cancelBtn"
-          style="display:none; width:100%; margin-top:8px; background:transparent; border:1px solid var(--border); color:var(--muted);"
-          onclick="cancelEdit()">Скасувати</button>
+        <button class="btn btn-cancel" id="cancelBtn" onclick="cancelEdit()">Скасувати</button>
       </div>
     </div>
+
   </div>
 </div>
+
+<div id="toast"></div>
 
 <script>
 const ROOT = "__ROOT_PATH__";
 let calendar;
 let allTasks = [];
 
-// ── Clock ────────────────────────────────────────
+// ── Toast ─────────────────────────────────────────
+let toastTimer;
+function toast(msg, isErr = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 2800);
+}
+
+// ── Clock ─────────────────────────────────────────
 function updateClock() {
   const now = new Date();
   document.getElementById('clock').textContent =
@@ -497,61 +577,68 @@ function updateClock() {
 }
 updateClock(); setInterval(updateClock, 30000);
 
-// ── Init ─────────────────────────────────────────
+// ── Init ──────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
     initialView: 'dayGridMonth',
     locale: 'uk',
     height: 'auto',
     headerToolbar: { left: 'prev', center: 'title', right: 'next' },
-    eventClick: info => { info.jsEvent.preventDefault(); }
+    eventClassNames: info => [info.event.extendedProps.evClass],
+    eventClick: info => info.jsEvent.preventDefault()
   });
   calendar.render();
-
-  // set today as default date
-  document.getElementById('eventDate').value = new Date().toISOString().slice(0,10);
-
+  document.getElementById('eventDate').value = todayStr;
   loadTasks();
 });
 
-// ── Data helpers ──────────────────────────────────
+// ── Helpers ───────────────────────────────────────
 const todayStr = new Date().toISOString().slice(0,10);
-
-function isOverdue(dateStr) { return dateStr < todayStr; }
-function isToday(dateStr)   { return dateStr === todayStr; }
+function isOverdue(d) { return d < todayStr; }
+function isToday(d)   { return d === todayStr; }
 
 const FREQ_LABELS = {
   none: null, daily: 'щодня', weekly: 'щотижня',
   monthly: 'щомісяця', custom: 'кастом'
 };
 
-// ── Load tasks ────────────────────────────────────
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Load ──────────────────────────────────────────
 async function loadTasks() {
   try {
-    const res = await fetch(ROOT + '/api/tasks');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    allTasks = await res.json();
-    renderCalendar();
+    const [tasksRes, eventsRes] = await Promise.all([
+      fetch(ROOT + '/api/tasks'),
+      fetch(ROOT + '/api/calendar-events')
+    ]);
+    if (!tasksRes.ok) throw new Error('tasks HTTP ' + tasksRes.status);
+    if (!eventsRes.ok) throw new Error('events HTTP ' + eventsRes.status);
+    allTasks = await tasksRes.json();
+    const calEvents = await eventsRes.json();
+    renderCalendar(calEvents);
     renderList();
     renderStats();
   } catch(e) {
-    console.error('loadTasks error:', e);
+    console.error('loadTasks:', e);
+    toast('Помилка завантаження', true);
   }
 }
 
-function renderCalendar() {
+// ── Calendar ──────────────────────────────────────
+function renderCalendar(events) {
   calendar.removeAllEvents();
-  allTasks.forEach(t => {
-    if (t.done) return;
-    calendar.addEvent({
-      title: t.title,
-      start: t.event_date,
-      color: isOverdue(t.event_date) ? 'var(--accent2)' :
-             isToday(t.event_date)   ? 'var(--accent)'  : '#4fa8ff'
-    });
+  events.forEach(ev => {
+    const overdue = isOverdue(ev.date);
+    const today   = isToday(ev.date);
+    const recurr  = ev.freq !== 'none';
+    const evClass = overdue ? 'ev-overdue' : today ? 'ev-today' : recurr ? 'ev-recurr' : 'ev-future';
+    calendar.addEvent({ title: ev.title, start: ev.date, extendedProps: { evClass } });
   });
 }
 
+// ── Stats ─────────────────────────────────────────
 function renderStats() {
   const active = allTasks.filter(t => !t.done);
   document.getElementById('st-total').textContent = active.length;
@@ -560,22 +647,21 @@ function renderStats() {
   document.getElementById('st-rec').textContent   = active.filter(t => t.freq !== 'none').length;
 }
 
+// ── Task list ─────────────────────────────────────
 function renderList() {
   const list = document.getElementById('taskList');
   if (!allTasks.length) {
     list.innerHTML = `<div class="empty"><span class="empty-icon">🛸</span>Завдань поки немає</div>`;
     return;
   }
-
   list.innerHTML = '';
   allTasks.forEach(t => {
-    const overdue = !t.done && isOverdue(t.event_date);
-    const today   = !t.done && isToday(t.event_date);
-    const freqLabel = FREQ_LABELS[t.freq];
-
-    const dateTag = `<span class="tag ${overdue ? 'tag-overdue' : today ? 'tag-today' : 'tag-date'}">${t.event_date}</span>`;
-    const freqTag = freqLabel
-      ? `<span class="tag tag-freq">${freqLabel}${t.freq==='custom' ? ' ('+t.interval_days+'д)' : ''}</span>`
+    const overdue    = !t.done && isOverdue(t.event_date);
+    const today      = !t.done && isToday(t.event_date);
+    const freqLabel  = FREQ_LABELS[t.freq];
+    const dateTag    = `<span class="tag ${overdue ? 'tag-overdue' : today ? 'tag-today' : 'tag-date'}">${t.event_date}</span>`;
+    const freqTag    = freqLabel
+      ? `<span class="tag tag-freq">${freqLabel}${t.freq==='custom' ? ' ('+t.interval_days+'д)':''}</span>`
       : '';
 
     const item = document.createElement('div');
@@ -587,7 +673,9 @@ function renderList() {
         <div class="task-meta">${dateTag}${freqTag}</div>
       </div>
       <div class="task-actions">
-        ${!t.done ? `<button class="btn btn-icon btn-done" title="Виконано" onclick="doneTask(${t.id})">✓</button>` : ''}
+        ${!t.done
+          ? `<button class="btn btn-icon btn-done" title="Виконано"   onclick="doneTask(${t.id})">✓</button>`
+          : ''}
         <button class="btn btn-icon btn-edit" title="Редагувати" onclick="editTask(${t.id})">✎</button>
         <button class="btn btn-icon btn-del"  title="Видалити"   onclick="deleteTask(${t.id})">✕</button>
       </div>`;
@@ -595,25 +683,21 @@ function renderList() {
   });
 }
 
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ── Form helpers ──────────────────────────────────
+// ── Form ──────────────────────────────────────────
 function toggleInterval() {
-  const show = document.getElementById('freq').value === 'custom';
-  document.getElementById('intervalField').style.display = show ? 'block' : 'none';
+  document.getElementById('intervalField').style.display =
+    document.getElementById('freq').value === 'custom' ? 'block' : 'none';
 }
 
 function cancelEdit() {
-  document.getElementById('taskId').value = '';
-  document.getElementById('title').value = '';
+  document.getElementById('taskId').value    = '';
+  document.getElementById('title').value     = '';
   document.getElementById('eventDate').value = todayStr;
-  document.getElementById('freq').value = 'none';
-  document.getElementById('interval').value = '';
+  document.getElementById('freq').value      = 'none';
+  document.getElementById('interval').value  = '';
   document.getElementById('intervalField').style.display = 'none';
-  document.getElementById('formMode').textContent = 'Нове завдання';
-  document.getElementById('cancelBtn').style.display = 'none';
+  document.getElementById('formMode').textContent        = 'Нове завдання';
+  document.getElementById('cancelBtn').style.display     = 'none';
 }
 
 function editTask(id) {
@@ -623,58 +707,76 @@ function editTask(id) {
   document.getElementById('title').value     = t.title;
   document.getElementById('eventDate').value = t.event_date;
   document.getElementById('freq').value      = t.freq;
-  document.getElementById('interval').value  = t.interval_days;
+  document.getElementById('interval').value  = t.interval_days || '';
   document.getElementById('intervalField').style.display = t.freq === 'custom' ? 'block' : 'none';
-  document.getElementById('formMode').textContent = 'Редагувати завдання';
-  document.getElementById('cancelBtn').style.display = 'block';
-  document.querySelector('.card:last-child').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  document.getElementById('formMode').textContent        = 'Редагувати завдання';
+  document.getElementById('cancelBtn').style.display     = 'block';
+  // scroll to form on mobile
+  document.getElementById('cancelBtn').closest('.card').scrollIntoView({ behavior:'smooth', block:'start' });
 }
 
-// ── API actions ───────────────────────────────────
+// ── API ───────────────────────────────────────────
 async function submitForm() {
   const id    = document.getElementById('taskId').value;
   const title = document.getElementById('title').value.trim();
-  const date  = document.getElementById('eventDate').value;
-  if (!title || !date) { alert('Заповніть назву та дату'); return; }
+  const dt    = document.getElementById('eventDate').value;
+  if (!title || !dt) { toast('Заповніть назву та дату', true); return; }
+
+  // FIX: always send a valid integer — never NaN
+  const intervalRaw = document.getElementById('interval').value;
+  const interval_days = intervalRaw === '' ? 0 : (parseInt(intervalRaw, 10) || 0);
 
   const payload = {
     title,
-    event_date: date,
+    event_date: dt,
     freq: document.getElementById('freq').value,
-    interval_days: parseInt(document.getElementById('interval').value || 0)
+    interval_days          // guaranteed integer
   };
 
   try {
     const url    = ROOT + (id ? '/api/tasks/' + id : '/api/tasks');
     const method = id ? 'PUT' : 'POST';
     const res    = await fetch(url, {
-      method, headers: { 'Content-Type': 'application/json' },
+      method,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`HTTP ${res.status}: ${body}`);
+    }
+    toast(id ? 'Завдання оновлено ✓' : 'Завдання додано ✓');
     cancelEdit();
     await loadTasks();
   } catch(e) {
-    console.error('submitForm error:', e);
-    alert('Помилка збереження');
+    console.error('submitForm:', e);
+    toast('Помилка збереження: ' + e.message, true);
   }
 }
 
 async function doneTask(id) {
   try {
-    const res = await fetch(ROOT + '/api/tasks/' + id + '/done', { method: 'POST' });
+    const res = await fetch(ROOT + '/api/tasks/' + id + '/done', { method:'POST' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast('Виконано! 🎉');
     await loadTasks();
-  } catch(e) { console.error('doneTask error:', e); }
+  } catch(e) {
+    console.error('doneTask:', e);
+    toast('Помилка', true);
+  }
 }
 
 async function deleteTask(id) {
   if (!confirm('Видалити завдання?')) return;
   try {
-    const res = await fetch(ROOT + '/api/tasks/' + id, { method: 'DELETE' });
+    const res = await fetch(ROOT + '/api/tasks/' + id, { method:'DELETE' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast('Видалено');
     await loadTasks();
-  } catch(e) { console.error('deleteTask error:', e); }
+  } catch(e) {
+    console.error('deleteTask:', e);
+    toast('Помилка видалення', true);
+  }
 }
 </script>
 </body>
