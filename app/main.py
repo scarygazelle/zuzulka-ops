@@ -4,7 +4,6 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import sqlite3
 from typing import Optional
-from datetime import date
 
 DB_PATH = "/data/zuzulka.db"
 
@@ -118,6 +117,9 @@ async def read_root(request: Request):
                     <input type="date" id="eventDate" required>
                     <select id="freq" onchange="toggleInterval(this.value)">
                         <option value="none">Одноразова</option>
+                        <option value="daily">Щодня</option>
+                        <option value="weekly">Щотижня</option>
+                        <option value="monthly">Щомісяця</option>
                         <option value="custom">Кожні Х днів</option>
                     </select>
                     <input type="number" id="interval" placeholder="Кількість днів" style="display:none;">
@@ -135,18 +137,30 @@ async def read_root(request: Request):
             let calendar, currentTasks = [];
 
             document.addEventListener('DOMContentLoaded', function() {{
-                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{ initialView: 'dayGridMonth', locale: 'uk' }});
+                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+                    initialView: 'dayGridMonth',
+                    locale: 'uk',
+                    eventDidMount: function(info) {{
+                        const today = new Date().toISOString().split('T')[0];
+                        const d = info.event.startStr;
+                        info.el.style.backgroundColor = d < today ? '#777' : (d === today ? '#4caf50' : '#ff9800');
+                    }}
+                }});
                 calendar.render();
                 loadTasks();
             }});
 
-            function toggleInterval(val) {{ document.getElementById('interval').style.display = val === 'custom' ? 'block' : 'none'; }}
-
-            function resetForm() {{
-                document.getElementById('taskForm').reset();
-                document.getElementById('taskId').value = '';
-                document.getElementById('formTitle').innerText = '➕ Нова задача';
-                document.getElementById('cancelBtn').style.display = 'none';
+            function isTaskActiveOnDate(t, dStr) {{
+                let tDate = new Date(t.event_date);
+                let cDate = new Date(dStr);
+                if (cDate < tDate) return false;
+                if (t.freq === 'none') return dStr === t.event_date;
+                let diff = Math.floor((cDate - tDate) / (1000 * 60 * 60 * 24));
+                if (t.freq === 'daily') return true;
+                if (t.freq === 'weekly') return diff % 7 === 0;
+                if (t.freq === 'monthly') return cDate.getDate() === tDate.getDate();
+                if (t.freq === 'custom') return diff % t.interval_days === 0;
+                return false;
             }}
 
             async function loadTasks() {{
@@ -157,12 +171,20 @@ async def read_root(request: Request):
                 list.innerHTML = '';
                 const today = new Date().toISOString().split('T')[0];
 
-                currentTasks.forEach(t => {{
-                    calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
+                // Динамічне додавання подій на 3 місяці вперед
+                let start = new Date();
+                let end = new Date(); end.setMonth(end.getMonth() + 3);
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {{
+                    let dStr = d.toISOString().split('T')[0];
+                    currentTasks.forEach(t => {{
+                        if (isTaskActiveOnDate(t, dStr)) calendar.addEvent({{ title: t.title, start: dStr, id: t.id }});
+                    }});
+                }}
 
-                    let statusClass = t.event_date < today ? 'past' : (t.event_date === today ? 'today' : 'future');
+                currentTasks.forEach(t => {{
+                    let status = t.event_date < today ? 'past' : (t.event_date === today ? 'today' : 'future');
                     const div = document.createElement('div');
-                    div.className = `task-item ${{statusClass}}`;
+                    div.className = `task-item ${{status}}`;
                     div.innerHTML = `<span><b>${{t.title}}</b> (${{t.event_date}})</span>
                         <div class="btns-group">
                             <button class="btn-icon" style="background:#ff9800" onclick="editTask(${{t.id}})">✎</button>
@@ -172,14 +194,23 @@ async def read_root(request: Request):
                 }});
             }}
 
+            function toggleInterval(val) {{ document.getElementById('interval').style.display = val === 'custom' ? 'block' : 'none'; }}
+
+            function resetForm() {{
+                document.getElementById('taskForm').reset();
+                document.getElementById('taskId').value = '';
+                document.getElementById('formTitle').innerText = '➕ Нова задача';
+                document.getElementById('cancelBtn').style.display = 'none';
+                toggleInterval('none');
+            }}
+
             function editTask(id) {{
                 const t = currentTasks.find(x => x.id === id);
                 document.getElementById('taskId').value = t.id;
                 document.getElementById('title').value = t.title;
                 document.getElementById('eventDate').value = t.event_date;
                 document.getElementById('freq').value = t.freq;
-                toggleInterval(t.freq);
-                if(t.freq === 'custom') document.getElementById('interval').value = t.interval_days;
+                if(t.freq === 'custom') {{ document.getElementById('interval').value = t.interval_days; toggleInterval('custom'); }}
                 document.getElementById('formTitle').innerText = '✏️ Редагувати задачу';
                 document.getElementById('cancelBtn').style.display = 'block';
             }}
@@ -187,21 +218,18 @@ async def read_root(request: Request):
             document.getElementById('taskForm').onsubmit = async (e) => {{
                 e.preventDefault();
                 const id = document.getElementById('taskId').value;
-                const method = id ? 'PUT' : 'POST';
-                const url = id ? `${{apiBase}}/api/tasks/${{id}}` : `${{apiBase}}/api/tasks`;
-
-                await fetch(url, {{
-                    method: method,
+                const data = {{
+                    title: document.getElementById('title').value,
+                    event_date: document.getElementById('eventDate').value,
+                    freq: document.getElementById('freq').value,
+                    interval_days: parseInt(document.getElementById('interval').value || 0)
+                }};
+                await fetch(id ? `${{apiBase}}/api/tasks/${{id}}` : `${{apiBase}}/api/tasks`, {{
+                    method: id ? 'PUT' : 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        title: document.getElementById('title').value,
-                        event_date: document.getElementById('eventDate').value,
-                        freq: document.getElementById('freq').value,
-                        interval_days: parseInt(document.getElementById('interval').value || 0)
-                    }})
+                    body: JSON.stringify(data)
                 }});
-                resetForm();
-                loadTasks();
+                resetForm(); loadTasks();
             }};
 
             async function deleteTask(id) {{ if(confirm("Видалити?")) {{ await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }}); loadTasks(); }} }}
