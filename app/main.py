@@ -159,7 +159,7 @@ async def read_root(request: Request):
                 if (t.freq === 'daily') return true;
                 if (t.freq === 'weekly') return diff % 7 === 0;
                 if (t.freq === 'monthly') return cDate.getDate() === tDate.getDate();
-                if (t.freq === 'custom') return diff % t.interval_days === 0;
+                if (t.freq === 'custom') return diff % (parseInt(t.interval_days) || 1) === 0;
                 return false;
             }}
 
@@ -169,10 +169,8 @@ async def read_root(request: Request):
                 calendar.removeAllEvents();
                 const list = document.getElementById('taskList');
                 list.innerHTML = '';
-                const today = new Date().toISOString().split('T')[0];
 
-                // Динамічне додавання подій на 3 місяці вперед
-                let start = new Date();
+                let start = new Date(); start.setDate(start.getDate() - 30);
                 let end = new Date(); end.setMonth(end.getMonth() + 3);
                 for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {{
                     let dStr = d.toISOString().split('T')[0];
@@ -181,6 +179,7 @@ async def read_root(request: Request):
                     }});
                 }}
 
+                const today = new Date().toISOString().split('T')[0];
                 currentTasks.forEach(t => {{
                     let status = t.event_date < today ? 'past' : (t.event_date === today ? 'today' : 'future');
                     const div = document.createElement('div');
@@ -201,18 +200,20 @@ async def read_root(request: Request):
                 document.getElementById('taskId').value = '';
                 document.getElementById('formTitle').innerText = '➕ Нова задача';
                 document.getElementById('cancelBtn').style.display = 'none';
-                toggleInterval('none');
+                document.getElementById('interval').style.display = 'none';
             }}
 
             function editTask(id) {{
-                const t = currentTasks.find(x => x.id === id);
+                const t = currentTasks.find(x => x.id == id);
+                if (!t) return;
                 document.getElementById('taskId').value = t.id;
                 document.getElementById('title').value = t.title;
                 document.getElementById('eventDate').value = t.event_date;
                 document.getElementById('freq').value = t.freq;
-                if(t.freq === 'custom') {{ document.getElementById('interval').value = t.interval_days; toggleInterval('custom'); }}
+                if(t.freq === 'custom') {{ document.getElementById('interval').value = t.interval_days; document.getElementById('interval').style.display = 'block'; }}
                 document.getElementById('formTitle').innerText = '✏️ Редагувати задачу';
                 document.getElementById('cancelBtn').style.display = 'block';
+                window.scrollTo({{ top: 0, behavior: 'smooth' }});
             }}
 
             document.getElementById('taskForm').onsubmit = async (e) => {{
@@ -232,7 +233,7 @@ async def read_root(request: Request):
                 resetForm(); loadTasks();
             }};
 
-            async function deleteTask(id) {{ if(confirm("Видалити?")) {{ await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }}); loadTasks(); }} }}
+            async function deleteTask(id) {{ if(confirm("Видалити задачу?")) {{ await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }}); loadTasks(); }} }}
         </script>
     </body>
     </html>
