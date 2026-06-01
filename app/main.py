@@ -3,7 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import sqlite3
+import os
 
+# Використовуємо абсолютний шлях до БД
 DB_PATH = "/data/zuzulka.db"
 
 def get_db():
@@ -60,14 +62,10 @@ async def create_task(task: TaskCreate):
 async def update_task(task_id: int, task: TaskCreate):
     conn = get_db()
     cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=? WHERE id=?",
-                       (task.title, task.event_date, task.freq, task.interval_days, task_id))
-        conn.commit()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
+    cursor.execute("UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=? WHERE id=?",
+                   (task.title, task.event_date, task.freq, task.interval_days, task_id))
+    conn.commit()
+    conn.close()
     return {"status": "ok"}
 
 @app.delete("/api/tasks/{task_id}")
@@ -125,33 +123,36 @@ async def read_root():
             });
 
             async function loadTasks() {
-                const res = await fetch('/api/tasks');
-                const tasks = await res.json();
-                calendar.removeAllEvents();
-                const list = document.getElementById('taskList');
-                list.innerHTML = '<h3>Список задач</h3>';
-                tasks.forEach(t => {
-                    calendar.addEvent({ title: t.title, start: t.event_date });
-                    list.innerHTML += `<div class="task-item">
-                        <span>${t.title} (${t.event_date})</span>
-                        <div>
-                            <button class="btn" style="background:#ff9800" onclick="editTask(${t.id})">✎</button>
-                            <button class="btn" style="background:#f44336" onclick="deleteTask(${t.id})">🗑️</button>
-                        </div>
-                    </div>`;
-                });
+                try {
+                    const res = await fetch('/api/tasks');
+                    if (!res.ok) throw new Error('Network response was not ok');
+                    const tasks = await res.json();
+                    calendar.removeAllEvents();
+                    const list = document.getElementById('taskList');
+                    list.innerHTML = '<h3>Список задач</h3>';
+                    tasks.forEach(t => {
+                        calendar.addEvent({ title: t.title, start: t.event_date });
+                        list.innerHTML += `<div class="task-item">
+                            <span>${t.title} (${t.event_date})</span>
+                            <div>
+                                <button class="btn" style="background:#ff9800" onclick="editTask(${t.id})">✎</button>
+                                <button class="btn" style="background:#f44336" onclick="deleteTask(${t.id})">🗑️</button>
+                            </div>
+                        </div>`;
+                    });
+                } catch (e) { console.error("Error loading tasks:", e); }
             }
 
-            function editTask(id) {
-                fetch('/api/tasks').then(res => res.json()).then(tasks => {
-                    const t = tasks.find(x => x.id == id);
-                    document.getElementById('taskId').value = t.id;
-                    document.getElementById('title').value = t.title;
-                    document.getElementById('eventDate').value = t.event_date;
-                    document.getElementById('freq').value = t.freq;
-                    document.getElementById('interval').style.display = (t.freq === 'custom' ? 'block' : 'none');
-                    document.getElementById('interval').value = t.interval_days;
-                });
+            async function editTask(id) {
+                const res = await fetch('/api/tasks');
+                const tasks = await res.json();
+                const t = tasks.find(x => x.id == id);
+                document.getElementById('taskId').value = t.id;
+                document.getElementById('title').value = t.title;
+                document.getElementById('eventDate').value = t.event_date;
+                document.getElementById('freq').value = t.freq;
+                document.getElementById('interval').style.display = (t.freq === 'custom' ? 'block' : 'none');
+                document.getElementById('interval').value = t.interval_days;
             }
 
             document.getElementById('taskForm').onsubmit = async (e) => {
@@ -169,6 +170,7 @@ async def read_root():
                     })
                 });
                 document.getElementById('taskForm').reset();
+                document.getElementById('taskId').value = '';
                 loadTasks();
             };
 
