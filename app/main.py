@@ -79,31 +79,41 @@ async def read_root(request: Request):
     <!DOCTYPE html>
     <html>
     <head>
+        <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
         <style>
             body {{ background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 20px; }}
-            .container {{ display: grid; grid-template-columns: 2fr 1fr; gap: 20px; max-width: 1400px; margin: auto; }}
+            .container {{ max-width: 1000px; margin: auto; }}
             .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
-            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }}
-            input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; }}
-            .btn {{ cursor: pointer; padding: 10px; border: none; border-radius: 6px; color: white; width: 100%; background: #03a9f4; }}
-            .btn-del {{ background: #f44336; width: auto; padding: 5px 10px; }}
+            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #252525; margin-bottom: 8px; border-radius: 8px; border-left: 5px solid #03a9f4; }}
+            input, select {{ width: 100%; padding: 12px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; box-sizing: border-box; }}
+            .btn {{ cursor: pointer; padding: 12px; border: none; border-radius: 6px; color: white; width: 100%; background: #03a9f4; font-weight: bold; }}
+            .btn-del {{ background: #f44336; padding: 6px 12px; border-radius: 4px; }}
+            h3 {{ margin-top: 0; color: #03a9f4; }}
         </style>
     </head>
     <body>
-        <h1>Zuzulka Log 🚀</h1>
         <div class="container">
+            <h1>Бортовий Журнал "Зузулька" 🚀</h1>
             <div class="card"><div id="calendar"></div></div>
+
             <div class="card">
-                <h3>➕ Додати задачу</h3>
+                <h3>➕ Нова задача / Подія</h3>
                 <form id="taskForm">
-                    <input type="text" id="title" placeholder="Назва" required>
+                    <input type="text" id="title" placeholder="Назва події / задачі" required>
                     <input type="date" id="eventDate" required>
-                    <select id="freq"><option value="none">Одноразова</option></select>
-                    <button type="submit" class="btn">Додати</button>
+                    <select id="freq">
+                        <option value="none">Одноразова</option>
+                        <option value="daily">Щодня</option>
+                        <option value="weekly">Щотижня</option>
+                        <option value="monthly">Щомісяця</option>
+                    </select>
+                    <button type="submit" class="btn">Додати в журнал</button>
                 </form>
-                <hr style="border:0; border-top:1px solid #444; margin: 20px 0;">
-                <h3>Список задач</h3>
+            </div>
+
+            <div class="card">
+                <h3>📜 Хронологічний список</h3>
                 <div id="taskList"></div>
             </div>
         </div>
@@ -127,7 +137,7 @@ async def read_root(request: Request):
                     calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
                     const div = document.createElement('div');
                     div.className = 'task-item';
-                    div.innerHTML = `<span>${{t.title}} (${{t.event_date}})</span>
+                    div.innerHTML = `<span><b>${{t.title}}</b> (${{t.event_date}}) - ${{t.freq !== 'none' ? '🔁 ' + t.freq : '📌 Одноразова'}}</span>
                                      <button class="btn btn-del" onclick="deleteTask(${{t.id}})">🗑️</button>`;
                     list.appendChild(div);
                 }});
@@ -150,7 +160,7 @@ async def read_root(request: Request):
             }};
 
             async function deleteTask(id) {{
-                if(!confirm("Видалити задачу?")) return;
+                if(!confirm("Видалити цю задачу?")) return;
                 await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }});
                 loadTasks();
             }}
