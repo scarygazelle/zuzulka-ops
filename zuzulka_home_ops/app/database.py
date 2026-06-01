@@ -2,7 +2,7 @@
 import os
 from datetime import datetime
 
-DB_PATH = os.getenv("DB_PATH", "data/zuzulka.db")
+DB_PATH = os.getenv("DB_PATH", "/data/zuzulka.db")
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
