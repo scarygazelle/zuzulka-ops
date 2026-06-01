@@ -30,8 +30,14 @@ def get_db():
         conn.close()
 
 
+def get_columns(conn) -> set:
+    rows = conn.execute("PRAGMA table_info(zuzulka_tasks)").fetchall()
+    return {row["name"] for row in rows}
+
+
 def init_db():
     with get_db() as conn:
+        # Create table with all known columns (only runs on a fresh DB)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS zuzulka_tasks (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,19 +45,22 @@ def init_db():
                 event_date     TEXT    NOT NULL,
                 freq           TEXT    DEFAULT 'none',
                 interval_days  INTEGER DEFAULT 0,
-                done           INTEGER DEFAULT 0
+                done           INTEGER DEFAULT 0,
+                task_type      TEXT    DEFAULT 'task'
             )
         """)
-        for col, definition in [
-            ("done",          "INTEGER DEFAULT 0"),
+        # Migrate existing DB: safely add any missing columns
+        existing = get_columns(conn)
+        migrations = [
+            ("freq",          "TEXT    DEFAULT 'none'"),
             ("interval_days", "INTEGER DEFAULT 0"),
-            ("freq",          "TEXT DEFAULT 'none'"),
-        ]:
-            try:
+            ("done",          "INTEGER DEFAULT 0"),
+            ("task_type",     "TEXT    DEFAULT 'task'"),
+        ]
+        for col, definition in migrations:
+            if col not in existing:
                 conn.execute(f"ALTER TABLE zuzulka_tasks ADD COLUMN {col} {definition}")
                 log.info("Migration: added column '%s'", col)
-            except sqlite3.OperationalError:
-                pass  # column already exists
         conn.commit()
 
 
@@ -200,8 +209,8 @@ async def create_task(task: TaskCreate):
     log.info("CREATE: %s", task.dict())
     with get_db() as conn:
         cursor = conn.execute(
-            "INSERT INTO zuzulka_tasks (title, event_date, freq, interval_days) VALUES (?, ?, ?, ?)",
-            (task.title, task.event_date, task.freq, task.interval_days),
+            "INSERT INTO zuzulka_tasks (title, event_date, freq, interval_days, task_type) VALUES (?, ?, ?, ?, ?)",
+            (task.title, task.event_date, task.freq, task.interval_days, "task"),
         )
         conn.commit()
         return {"id": cursor.lastrowid, "status": "created"}
@@ -213,7 +222,7 @@ async def update_task(task_id: int, task: TaskCreate):
     with get_db() as conn:
         result = conn.execute(
             "UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=?, done=0 WHERE id=?",
-            (task.title, task.event_date, task.freq, task.interval_days, task_id),
+            (task.title, task.event_date, task.freq, task.interval_days, task_id),  # task_type unchanged
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Task not found")
