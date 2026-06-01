@@ -127,7 +127,7 @@ async def read_root(request: Request):
                         calendar.addEvent({{ title: t.title, rrule: {{ freq: t.freq, dtstart: t.event_date }} }});
                     }} else {{
                         calendar.addEvent({{ title: t.title, start: t.event_date }});
-                    }});
+                    }}
                 }});
                 document.getElementById('eventList').innerHTML = data.map(t =>
                     `<div class="event-item">${{t.title}} - ${{t.event_date}}</div>`).join('');
