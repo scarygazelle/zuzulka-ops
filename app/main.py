@@ -15,7 +15,6 @@ def get_db():
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
-    # Додаємо колонку interval_days для довільного циклу
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS zuzulka_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +79,7 @@ async def read_root(request: Request):
     <!DOCTYPE html>
     <html>
     <head>
+        <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
         <style>
             body {{ background: #121212; color: white; font-family: sans-serif; padding: 20px; }}
@@ -90,7 +90,8 @@ async def read_root(request: Request):
             .btn-icon {{ cursor: pointer; padding: 5px 8px; border: none; border-radius: 4px; color: white; font-size: 14px; }}
             .btn-edit {{ background: #ff9800; }}
             .btn-del {{ background: #f44336; }}
-            input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; }}
+            input, select {{ width: 100%; padding: 10px; background: #333; border: 1px solid #555; color: white; margin-bottom: 10px; border-radius: 6px; box-sizing: border-box; }}
+            .btn-submit {{ background: #03a9f4; border:none; padding:10px; width:100%; border-radius:6px; color:white; font-weight:bold; }}
         </style>
     </head>
     <body>
@@ -107,7 +108,7 @@ async def read_root(request: Request):
                         <option value="custom">Кожні Х днів</option>
                     </select>
                     <input type="number" id="interval" placeholder="Кількість днів" style="display:none;">
-                    <button type="submit" class="btn" style="background:#03a9f4; border:none; padding:10px; width:100%; border-radius:6px; color:white;">Додати</button>
+                    <button type="submit" class="btn-submit">Додати</button>
                 </form>
             </div>
             <div class="card">
@@ -117,19 +118,32 @@ async def read_root(request: Request):
         </div>
         <script>
             const apiBase = "{root_path}";
+            let calendar;
+
+            document.addEventListener('DOMContentLoaded', function() {{
+                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{
+                    initialView: 'dayGridMonth',
+                    locale: 'uk'
+                }});
+                calendar.render();
+                loadTasks();
+            }});
+
             function toggleInterval(val) {{ document.getElementById('interval').style.display = val === 'custom' ? 'block' : 'none'; }}
 
             async function loadTasks() {{
                 const res = await fetch(`${{apiBase}}/api/tasks`);
                 const tasks = await res.json();
+                calendar.removeAllEvents();
                 const list = document.getElementById('taskList');
                 list.innerHTML = '';
                 tasks.forEach(t => {{
+                    calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
                     const div = document.createElement('div');
                     div.className = 'task-item';
                     div.innerHTML = `<span><b>${{t.title}}</b> (${{t.event_date}})</span>
                         <div class="btns-group">
-                            <button class="btn-icon btn-edit" onclick="alert('Редагування ID: ${{t.id}} - скоро буде!')">✎</button>
+                            <button class="btn-icon btn-edit" onclick="alert('Редагування ID: ${{t.id}}')">✎</button>
                             <button class="btn-icon btn-del" onclick="deleteTask(${{t.id}})">🗑️</button>
                         </div>`;
                     list.appendChild(div);
@@ -148,11 +162,12 @@ async def read_root(request: Request):
                         interval_days: parseInt(document.getElementById('interval').value || 0)
                     }})
                 }});
+                document.getElementById('taskForm').reset();
+                toggleInterval('none');
                 loadTasks();
             }};
 
             async function deleteTask(id) {{ if(confirm("Видалити?")) {{ await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }}); loadTasks(); }} }}
-            loadTasks();
         </script>
     </body>
     </html>
