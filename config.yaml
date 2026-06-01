@@ -1,6 +1,6 @@
 name: "Zuzulka Home Ops"
 description: "Home Assistant Board Log API"
-version: "1.0.6"
+version: "1.0.7"
 slug: "zuzulka_home_ops"
 arch:
   - amd64

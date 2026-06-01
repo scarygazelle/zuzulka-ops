@@ -1,11 +1,10 @@
-﻿from fastapi import FastAPI, Request, HTTPException
+﻿from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import sqlite3
 from typing import Optional
 
-# База даних у системній папці аддонів HA
 DB_PATH = "/data/zuzulka.db"
 
 def get_db():
@@ -126,9 +125,9 @@ async def read_root(request: Request):
                 data.forEach(t => {{
                     if (t.freq !== 'none') {{
                         calendar.addEvent({{ title: t.title, rrule: {{ freq: t.freq, dtstart: t.event_date }} }});
-                    } else {{
+                    }} else {{
                         calendar.addEvent({{ title: t.title, start: t.event_date }});
-                    }}
+                    }});
                 }});
                 document.getElementById('eventList').innerHTML = data.map(t =>
                     `<div class="event-item">${{t.title}} - ${{t.event_date}}</div>`).join('');
