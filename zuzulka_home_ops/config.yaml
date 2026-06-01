@@ -1,6 +1,6 @@
-﻿name: "Бортовий Журнал Зузулька"
-description: "Хаб логування подій будинку, рекурентних задач та вебхуків"
-version: "1.0.0"
+name: "Zuzulka Home Ops"
+description: "Home Assistant Board Log API"
+version: "1.0.2"
 slug: "zuzulka_home_ops"
 arch:
   - amd64
@@ -8,7 +8,4 @@ init: false
 ingress: true
 ingress_port: 8000
 panel_icon: "mdi:book-open-page-variant"
-panel_title: "Зузулька"
-homeassistant_api: true
-options: {}
-schema: {}
+panel_title: "????????"
