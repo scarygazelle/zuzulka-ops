@@ -154,12 +154,9 @@ def next_occurrences(task: dict, months_ahead: int = 3) -> List[str]:
     return dates
 
 
-def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
-    """Bump event_date to next future occurrence after marking done."""
+def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> str:
+    """Bump event_date to next future occurrence. Returns the new date string."""
     freq = task["freq"]
-    if freq == "none":
-        return
-
     today = date.today()
     event = date.fromisoformat(task["event_date"])
 
@@ -172,7 +169,7 @@ def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
     elif freq == "custom":
         delta = timedelta(days=max(task["interval_days"] or 1, 1))
     else:
-        return
+        delta = timedelta(days=1)
 
     while event <= today:
         event += delta
@@ -182,6 +179,7 @@ def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
         (event.isoformat(), task["id"]),
     )
     conn.commit()
+    return event.isoformat()
 
 
 # ─────────────────────────────────────────────
@@ -242,11 +240,12 @@ async def complete_task(task_id: int):
             raise HTTPException(status_code=404, detail="Task not found")
         task = dict(row)
         if task["freq"] != "none":
-            advance_recurring_task(conn, task)
+            next_date = advance_recurring_task(conn, task)
+            return {"status": "done", "next_date": next_date}
         else:
             conn.execute("UPDATE zuzulka_tasks SET done=1 WHERE id=?", (task_id,))
             conn.commit()
-        return {"status": "done"}
+            return {"status": "done", "next_date": None}
 
 
 @app.delete("/tasks/{task_id}", status_code=204)
@@ -432,17 +431,30 @@ header {
 /* ── Calendar event chips — DARK TEXT for readability ── */
 .fc .fc-event {
   border: none !important;
-  border-radius: 4px !important;
-  font-size: 11px !important;
-  font-family: var(--font-mono) !important;
+  border-radius: 5px !important;
+  font-size: 12px !important;
   font-weight: 700 !important;
-  padding: 2px 5px !important;
-  color: #0a0c10 !important;   /* always dark text on colored bg */
+  padding: 0 !important;
+  overflow: hidden !important;
 }
-.fc .fc-event.ev-overdue { background: #ff4f81 !important; }
-.fc .fc-event.ev-today   { background: #4fffb0 !important; }
-.fc .fc-event.ev-future  { background: #4fa8ff !important; }
-.fc .fc-event.ev-recurr  { background: var(--amber) !important; }
+/* Target every inner element FullCalendar generates */
+.fc .fc-event *,
+.fc .fc-event a,
+.fc .fc-event .fc-event-main,
+.fc .fc-daygrid-event-dot {
+  color: #0a0a0a !important;
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+.fc .fc-event.ev-overdue,
+.fc .fc-event.ev-overdue .fc-event-main { background: #ff4f81 !important; }
+.fc .fc-event.ev-today,
+.fc .fc-event.ev-today   .fc-event-main { background: #4fffb0 !important; }
+.fc .fc-event.ev-future,
+.fc .fc-event.ev-future  .fc-event-main { background: #4fa8ff !important; }
+.fc .fc-event.ev-recurr,
+.fc .fc-event.ev-recurr  .fc-event-main { background: #ffd166 !important; }
 
 .fc .fc-col-header-cell-cushion { color: var(--muted) !important; font-size: 12px !important; }
 .fc .fc-daygrid-more-link { color: var(--muted) !important; font-size: 11px !important; }
@@ -647,6 +659,9 @@ document.addEventListener('DOMContentLoaded', () => {
     height: 'auto',
     headerToolbar: { left: 'prev', center: 'title', right: 'next' },
     eventClassNames: info => [info.event.extendedProps.evClass],
+    eventContent: info => ({
+      html: `<div style="padding:2px 5px;font-size:12px;font-weight:700;color:#0a0a0a;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${info.event.title}</div>`
+    }),
     eventClick: info => info.jsEvent.preventDefault()
   });
   calendar.render();
@@ -820,7 +835,13 @@ async function doneTask(id) {
   try {
     const res = await fetch(ROOT + '/tasks/' + id + '/done', { method:'POST' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    toast('Виконано! 🎉');
+    const data = await res.json();
+    // For recurring tasks, show next date; for one-time, just celebrate
+    if (data.next_date) {
+      toast('Виконано! Наступне: ' + data.next_date + ' 🔄');
+    } else {
+      toast('Виконано! 🎉');
+    }
     await loadTasks();
   } catch(e) {
     console.error('doneTask:', e);
