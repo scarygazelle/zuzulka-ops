@@ -1,9 +1,18 @@
-﻿from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+﻿from __future__ import annotations  # enables list[str] on Python 3.8
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, validator
 from contextlib import contextmanager
 from datetime import date, timedelta
+from typing import List, Optional
 import sqlite3
+import logging
+import traceback
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("zuzulka")
 
 # ─────────────────────────────────────────────
 #  Database
@@ -47,6 +56,19 @@ app = FastAPI()
 init_db()
 
 
+# ── Global error handlers — always return JSON, never a blank 500 ──
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    log.error("Validation error: %s", exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(Exception)
+async def generic_error_handler(request: Request, exc: Exception):
+    log.error("Unhandled exception:\n%s", traceback.format_exc())
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
 @app.middleware("http")
 async def ingress_path_middleware(request: Request, call_next):
     root_path = request.headers.get("X-Ingress-Path", "")
@@ -61,13 +83,25 @@ class TaskCreate(BaseModel):
     title: str
     event_date: str
     freq: str = "none"
-    interval_days: int = 0   # Pydantic coerces None/null → 0 via default
+    interval_days: int = 0
+
+    @validator("interval_days", pre=True, always=True)
+    def coerce_interval(cls, v):
+        try:
+            return int(v or 0)
+        except (ValueError, TypeError):
+            return 0
+
+    @validator("freq", pre=True, always=True)
+    def coerce_freq(cls, v):
+        allowed = {"none", "daily", "weekly", "monthly", "custom"}
+        return v if v in allowed else "none"
 
 
 # ─────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────
-def next_occurrences(task: dict, months_ahead: int = 3) -> list[str]:
+def next_occurrences(task: dict, months_ahead: int = 3) -> List[str]:
     """
     Return all future occurrence dates for a recurring task,
     from today up to `months_ahead` months from now.
@@ -137,7 +171,16 @@ def advance_recurring_task(conn: sqlite3.Connection, task: dict) -> None:
 # ─────────────────────────────────────────────
 #  API Routes
 # ─────────────────────────────────────────────
-@app.get("/api/tasks")
+@app.get("/api/debug")
+async def debug():
+    """Quick health-check — open in browser to verify the API is alive."""
+    import sys
+    with get_db() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM zuzulka_tasks").fetchone()[0]
+    return {"status": "ok", "python": sys.version, "task_count": count}
+
+
+
 async def get_tasks():
     with get_db() as conn:
         rows = conn.execute(
@@ -148,6 +191,7 @@ async def get_tasks():
 
 @app.post("/api/tasks", status_code=201)
 async def create_task(task: TaskCreate):
+    log.info("CREATE: %s", task.dict())
     with get_db() as conn:
         cursor = conn.execute(
             "INSERT INTO zuzulka_tasks (title, event_date, freq, interval_days) VALUES (?, ?, ?, ?)",
@@ -159,6 +203,7 @@ async def create_task(task: TaskCreate):
 
 @app.put("/api/tasks/{task_id}")
 async def update_task(task_id: int, task: TaskCreate):
+    log.info("UPDATE %s: %s", task_id, task.dict())
     with get_db() as conn:
         result = conn.execute(
             "UPDATE zuzulka_tasks SET title=?, event_date=?, freq=?, interval_days=?, done=0 WHERE id=?",
