@@ -57,13 +57,20 @@ async def get_tasks():
 async def create_task(task: TaskCreate):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO zuzulka_tasks (title, event_date, task_type, freq) VALUES (?, ?, ?, ?)",
-        (task.title, task.event_date, task.task_type, task.freq)
-    )
+    cursor.execute("INSERT INTO zuzulka_tasks (title, event_date, task_type, freq) VALUES (?, ?, ?, ?)",
+                   (task.title, task.event_date, task.task_type, task.freq))
     conn.commit()
     conn.close()
     return {"status": "success"}
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: int):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM zuzulka_tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted"}
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -72,14 +79,14 @@ async def read_root(request: Request):
     <!DOCTYPE html>
     <html>
     <head>
-        <meta charset="utf-8">
         <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
         <style>
             body {{ background: #121212; color: #e0e0e0; font-family: sans-serif; padding: 20px; }}
             .container {{ display: grid; grid-template-columns: 2fr 1fr; gap: 20px; max-width: 1400px; margin: auto; }}
             .card {{ background: #1e1e1e; padding: 20px; border-radius: 12px; }}
-            input, select {{ width: 100%; padding: 10px; background: #252525; border: 1px solid #444; color: white; margin-bottom: 10px; border-radius: 6px; }}
-            .btn {{ background: #03a9f4; color: white; padding: 10px; border: none; width: 100%; border-radius: 6px; cursor: pointer; }}
+            .task-item {{ display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #252525; margin-bottom: 5px; border-radius: 6px; }}
+            .btn {{ cursor: pointer; padding: 5px 10px; border: none; border-radius: 4px; color: white; }}
+            .del {{ background: #f44336; }}
         </style>
     </head>
     <body>
@@ -87,16 +94,8 @@ async def read_root(request: Request):
         <div class="container">
             <div class="card"><div id="calendar"></div></div>
             <div class="card">
-                <h2>➕ Додати задачу</h2>
-                <form id="taskForm">
-                    <input type="text" id="title" placeholder="Назва" required>
-                    <input type="date" id="eventDate" required>
-                    <select id="freq">
-                        <option value="none">Одноразова</option>
-                        <option value="daily">Щодня</option>
-                    </select>
-                    <button type="submit" class="btn">Додати</button>
-                </form>
+                <h3>Список задач</h3>
+                <div id="taskList"></div>
             </div>
         </div>
         <script>
@@ -104,44 +103,34 @@ async def read_root(request: Request):
             let calendar;
 
             document.addEventListener('DOMContentLoaded', function() {{
-                const calendarEl = document.getElementById('calendar');
-                calendar = new FullCalendar.Calendar(calendarEl, {{
-                    initialView: 'dayGridMonth',
-                    locale: 'uk'
-                }});
+                calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {{ initialView: 'dayGridMonth', locale: 'uk' }});
                 calendar.render();
                 loadTasks();
             }});
 
             async function loadTasks() {{
-                if (!calendar) return;
-                try {{
-                    const res = await fetch(`${{apiBase}}/api/tasks`);
-                    const data = await res.json();
-                    calendar.removeAllEvents();
-                    data.forEach(t => {{
-                        calendar.addEvent({{ title: t.title, start: t.event_date }});
-                    }});
-                }} catch(err) {{ console.error("Помилка завантаження:", err); }}
+                const res = await fetch(`${{apiBase}}/api/tasks`);
+                const tasks = await res.json();
+                calendar.removeAllEvents();
+                const list = document.getElementById('taskList');
+                list.innerHTML = '';
+
+                tasks.forEach(t => {{
+                    calendar.addEvent({{ id: t.id, title: t.title, start: t.event_date }});
+
+                    const div = document.createElement('div');
+                    div.className = 'task-item';
+                    div.innerHTML = `<span>${{t.title}} (${{t.event_date}})</span>
+                                     <button class="btn del" onclick="deleteTask(${{t.id}})">🗑️</button>`;
+                    list.appendChild(div);
+                }});
             }}
 
-            document.getElementById('taskForm').onsubmit = async (e) => {{
-                e.preventDefault();
-                const res = await fetch(`${{apiBase}}/api/tasks`, {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        title: document.getElementById('title').value,
-                        event_date: document.getElementById('eventDate').value,
-                        task_type: 'custom',
-                        freq: document.getElementById('freq').value
-                    }})
-                }});
-                if (res.ok) {{
-                    document.getElementById('taskForm').reset();
-                    loadTasks();
-                }}
-            }};
+            async function deleteTask(id) {{
+                if(!confirm("Видалити цю задачу?")) return;
+                await fetch(`${{apiBase}}/api/tasks/${{id}}`, {{ method: 'DELETE' }});
+                loadTasks();
+            }}
         </script>
     </body>
     </html>
